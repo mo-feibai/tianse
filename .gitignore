@@ -1,0 +1,18 @@
+# Build output
+.build/
+bin/
+frontend/dist/
+frontend/node_modules/
+frontend/bindings/
+
+# Wails
+.task/
+.wails/
+
+# Font sources (~62 MB, downloaded by hand — see assets/fonts/README.md)
+assets/fonts/src/
+
+# Local scratch
+.tmp
+*.exe
+*.log

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MsixPackagingToolTemplate
+    xmlns="http://schemas.microsoft.com/msix/packaging/msixpackagingtool/template/2022">
+    <Settings
+        AllowTelemetry="false"
+        ApplyACLsToPackageFiles="true"
+        GenerateCommandLineFile="true"
+        AllowPromptForPassword="false">
+    </Settings>
+    <Installer
+        Path="tianse.exe"
+        Arguments=""
+        InstallLocation="C:\Program Files\Tianse\天色">
+    </Installer>
+    <PackageInformation
+        PackageName="天色"
+        PackageDisplayName="天色"
+        PublisherName="CN=Tianse"
+        PublisherDisplayName="Tianse"
+        Version="0.1.0.0"
+        PackageDescription="随天光而变的护眼工具">
+        <Capabilities>
+            <Capability Name="runFullTrust" />
+            
+        </Capabilities>
+        <Applications>
+            <Application
+                Id="com.tianse.app"
+                Description="随天光而变的护眼工具"
+                DisplayName="天色"
+                ExecutableName="tianse.exe"
+                EntryPoint="Windows.FullTrustApplication">
+                
+            </Application>
+        </Applications>
+        <Resources>
+            <Resource Language="en-us" />
+        </Resources>
+        <Dependencies>
+            <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+        </Dependencies>
+        <Properties>
+            <Framework>false</Framework>
+            <DisplayName>天色</DisplayName>
+            <PublisherDisplayName>Tianse</PublisherDisplayName>
+            <Description>随天光而变的护眼工具</Description>
+            <Logo>Assets\AppIcon.png</Logo>
+        </Properties>
+    </PackageInformation>
+    <SaveLocation PackagePath="tianse.msix" />
+    <PackageIntegrity>
+        <CertificatePath></CertificatePath>
+    </PackageIntegrity>
+</MsixPackagingToolTemplate>
