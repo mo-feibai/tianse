@@ -46,10 +46,36 @@ func Load(path string) (*Store, error) {
 
 // migrate upgrades older schema versions in place.
 func migrate(cfg *Config) {
-	if cfg.Version == 0 {
-		cfg.Version = CurrentVersion
+	// An empty Baseline means no choice was ever recorded: either a version-1
+	// file, which predates the key, or a hand-edited one. Version 1 multiplied
+	// every ratio by the launch level, so pinning those files to "startup" keeps
+	// each number meaning exactly what it meant before the upgrade and the screen
+	// does not move on the first launch. A file that already names a baseline is
+	// a decision and is left alone.
+	if cfg.Brightness.Baseline == "" {
+		cfg.Brightness.Baseline = BaselineStartup
 	}
-	// Version 1 is the first shipped schema; future steps go here.
+	// Version 2 and earlier had a second answer to "is it dark yet" in
+	// UI.Theme. Fold it into Theme.Mode so the window and the Windows theme keep
+	// the behaviour the user last chose, then clear the field: from here on there
+	// is exactly one answer, and leaving the old key behind would let a later
+	// write recreate the disagreement.
+	//
+	// The condition looks at the field, not the version number. A file can be
+	// version 3 and still carry the key — hand-edited, or written by a build that
+	// predates the fold — and a version check would walk past it.
+	switch cfg.UI.Theme {
+	case "light":
+		cfg.Theme.Mode = "always_light"
+	case "dark":
+		cfg.Theme.Mode = "always_dark"
+	case "system":
+		cfg.Theme.Mode = "follow_system"
+	case "auto":
+		// "auto" meant follow the sky, which is what follow_sky already says.
+		cfg.Theme.Mode = "follow_sky"
+	}
+	cfg.UI.Theme = ""
 	if cfg.Version < CurrentVersion {
 		cfg.Version = CurrentVersion
 	}
@@ -69,6 +95,12 @@ func normalise(cfg *Config) {
 	}
 	if cfg.Temp.SettleAfterSunsetMin < 0 || cfg.Temp.SettleAfterSunsetMin > 240 {
 		cfg.Temp.SettleAfterSunsetMin = 30
+	}
+
+	switch cfg.Brightness.Baseline {
+	case BaselinePanel, BaselineStartup:
+	default:
+		cfg.Brightness.Baseline = BaselinePanel
 	}
 
 	cfg.Brightness.DayRatio = clamp01(cfg.Brightness.DayRatio, 1.0)

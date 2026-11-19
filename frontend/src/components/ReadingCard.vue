@@ -6,6 +6,14 @@ const props = defineProps<{
   kelvin: number;
   brightness: number;
   brightnessOk: boolean;
+  /** Panel level read at launch, in panel percent. -1 = no backlight. */
+  brightnessBase: number;
+  /** Multiplier currently applied, in percent. 0 = the feature is off. */
+  brightnessRatio: number;
+  /** Which baseline the multiplier applies to: "panel" or "startup". */
+  brightnessBaseline: string;
+  /** The user moved the backlight by hand and the engine stepped off it. */
+  brightnessManual: boolean;
   night: boolean;
   previewing: boolean;
 }>();
@@ -48,6 +56,20 @@ const brightnessText = computed(() => {
   if (props.brightness < 0) return "—";
   return `${props.brightness}%`;
 });
+
+// The number on the left of this line is a panel percentage, and the settings
+// page can express its ratios against two different baselines. Under "panel" the
+// two agree and there is nothing to add. Under "startup" the settings number is a
+// multiplier on the launch level, so the arithmetic is printed: 100% of a panel
+// that boots at 23% is 23%. The manual case replaces both, because the figure on
+// the right is then the user's own doing and the engine is not steering it.
+const brightnessNote = computed(() => {
+  if (props.brightnessManual) return "手动";
+  if (!props.brightnessOk || props.brightnessBase < 0) return "";
+  if (props.brightnessBaseline !== "startup") return "";
+  if (props.brightnessRatio <= 0) return `开机 ${props.brightnessBase}%`;
+  return `开机 ${props.brightnessBase}% × ${props.brightnessRatio}%`;
+});
 </script>
 
 <template>
@@ -60,8 +82,11 @@ const brightnessText = computed(() => {
         <span class="unit">K</span>
       </div>
       <div class="right">
-        <span class="label">亮度</span>
-        <span class="sub" :class="{ warn: !brightnessOk }">{{ brightnessText }}</span>
+        <div class="readout">
+          <span class="label">亮度</span>
+          <span class="sub" :class="{ warn: !brightnessOk }">{{ brightnessText }}</span>
+        </div>
+        <span v-if="brightnessNote" class="note">{{ brightnessNote }}</span>
       </div>
     </div>
   </section>
@@ -144,6 +169,13 @@ const brightnessText = computed(() => {
 
 .right {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.readout {
+  display: flex;
   align-items: baseline;
   gap: 8px;
 }
@@ -166,5 +198,16 @@ const brightnessText = computed(() => {
   font-family: var(--font-text);
   font-size: 14px;
   color: var(--ink);
+}
+
+/* The derivation, not a second reading: 12px ink so it never competes with the
+   number above it. */
+.note {
+  font-family: var(--font-text);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 </style>

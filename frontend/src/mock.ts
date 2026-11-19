@@ -135,6 +135,17 @@ export function previewStatus(): Status {
   const brightnessOff = /[?&]boff=1\b/.test(location.search);
   // ?bok=0 previews a panel that refuses DDC/CI: the card must read 不可控.
   const brightnessOK = !/[?&]bok=0\b/.test(location.search);
+  // ?cap=85 previews a panel whose driver caps the colour shift, so the status
+  // card can be checked for clipping: the warning must fit one 192 px line.
+  const capMatch = /[?&]cap=(\d+)\b/.exec(location.search);
+  const cap = capMatch ? Number(capMatch[1]) : 0;
+  // ?bsup=1 previews the "startup" baseline, where the reading card has to print
+  // the arithmetic; ?bman=1 previews a display the user took over by hand.
+  const baselineStartup = /[?&]bsup=1\b/.test(location.search);
+  const brightnessManual = /[?&]bman=1\b/.test(location.search);
+  // ?mode=always_dark previews the switch that now drives both surfaces; the
+  // window has to follow it without waiting for the sky.
+  const mode = /[?&]mode=([a-z_]+)\b/.exec(location.search)?.[1] ?? "follow_sky";
   return {
     Kelvin: light ? 5800 : 4520,
     Phase: "evening",
@@ -147,18 +158,22 @@ export function previewStatus(): Status {
     Polar: false,
     BrightnessOn: !brightnessOff,
     BrightnessOK: brightnessOK,
-    BrightnessPercent: 62,
+    BrightnessPercent: 23,
+    BrightnessBase: 23,
+    BrightnessRatio: 100,
+    BrightnessBaseline: baselineStartup ? "startup" : "panel",
+    BrightnessManual: brightnessManual,
     ThemeOn: true,
-    ThemeDark: false,
-    ThemeMode: "follow_sky",
-    SurfaceDark: !light,
+    ThemeDark: mode === "always_dark",
+    ThemeMode: mode,
+    SurfaceDark: mode === "always_dark" ? true : mode === "always_light" ? false : !light,
     Accent: light ? "#2B7780" : "#4CC6D1",
     Ink: light ? "#606D74" : "#8D9FAE",
     Xiang: light ? "#92680F" : "#D9A441",
     City: "杭州",
     DisplayName: "显示器 1",
     DisplayNum: 1,
-    Warning: "",
+    Warning: cap > 0 && cap < 100 ? `面板上限 ${cap}%，色温已收缩` : "",
     GammaOK: true,
     Manual: false,
     Held: held,
@@ -171,15 +186,26 @@ export function previewConfig(): any {
   // answers DDC, so the figure must stay a real number.
   const q = new URLSearchParams(location.search);
   const firstRun = q.get("first") !== "0";
+  const baselineStartup = q.get("bsup") === "1";
+  // ?mode=follow_system previews the other three answers of the one switch that
+  // now drives both the window and the Windows theme.
+  const mode = q.get("mode") || "follow_sky";
   return {
-    Version: 1,
+    Version: 3,
     Location: { City: "杭州", Latitude: 30.2741, Longitude: 120.1551, Timezone: "Asia/Shanghai" },
     Temp: { Enabled: true, Day: 6500, Night: 3400, StartBeforeSunsetMin: 120, SettleAfterSunsetMin: 30 },
-    Brightness: { Enabled: true, DayRatio: 1, NightRatio: 0.45, FloorRatio: 0.3, StepThreshold: 0.03 },
-    Theme: { Enabled: true, Mode: "follow_sky", DarkAt: 4500, LightAt: 5200 },
+    Brightness: {
+      Enabled: true,
+      Baseline: baselineStartup ? "startup" : "panel",
+      DayRatio: 1,
+      NightRatio: 0.45,
+      FloorRatio: 0.05,
+      StepThreshold: 0.03,
+    },
+    Theme: { Enabled: true, Mode: mode, DarkAt: 4500, LightAt: 5200 },
     Schedule: { Mode: "sun", Fixed: { NightStart: "19:00", NightEnd: "07:00" } },
     Displays: {},
-    UI: { Theme: "auto", AccentDrift: true, LastPage: "main" },
+    UI: { AccentDrift: true, LastPage: "main" },
     App: { Autostart: false, PauseUntil: "", FirstRun: firstRun },
   };
 }

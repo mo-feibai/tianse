@@ -12,7 +12,26 @@ import (
 )
 
 // CurrentVersion is the schema version written into new files.
-const CurrentVersion = 1
+//
+// 2 added Brightness.Baseline. Files written by version 1 have no such key, and
+// migrate gives them "startup" so the screen does not move on the first launch
+// after the upgrade.
+//
+// 3 folded UI.Theme into Theme.Mode. There used to be two independent answers to
+// "is it dark yet" — one for the Windows theme, one for the app's own surface —
+// and they disagreed by up to an hour, which is exactly the bug the user
+// reported: the desktop went dark at 16:50 and the window was still white at
+// 17:17. One switch now drives both.
+const CurrentVersion = 3
+
+// The two baselines Brightness.Baseline can name. They are strings in the file
+// because a user reads the file, and an int would need a comment to decode.
+const (
+	// BaselinePanel multiplies against the panel's own full scale.
+	BaselinePanel = "panel"
+	// BaselineStartup multiplies against the level read at launch.
+	BaselineStartup = "startup"
+)
 
 // Location is where the user is. Latitude and longitude are pre-filled from the
 // built-in city table, so the app never needs a network call or a Windows
@@ -33,17 +52,30 @@ type Temp struct {
 	SettleAfterSunsetMin int     `yaml:"settle_after_sunset_min"`
 }
 
-// Brightness is the DDC/CI brightness ramp, expressed relative to the level the
-// user had when the app started.
+// Brightness is the DDC/CI brightness ramp. The three ratios are multipliers on
+// a baseline, and Baseline decides which baseline they multiply:
+//
+//	"panel"   — the panel's own full scale, so a ratio of 1.0 asks for 100% of
+//	            the panel and 0.45 asks for 45% of it.
+//	"startup" — the level the panel happened to be at when the app launched, so
+//	            1.0 means "leave it where it was" and the ratios can only dim.
+//
+// The field is a switch rather than two sets of numbers because the formula is
+// the same either way; only the value of the baseline changes.
 type Brightness struct {
 	Enabled       bool    `yaml:"enabled"`
+	Baseline      string  `yaml:"baseline"`
 	DayRatio      float64 `yaml:"day_ratio"`
 	NightRatio    float64 `yaml:"night_ratio"`
 	FloorRatio    float64 `yaml:"floor_ratio"`
 	StepThreshold float64 `yaml:"step_threshold"`
 }
 
-// Theme is the Windows light/dark switch.
+// Theme is the light/dark switch, and it drives both surfaces: the Windows
+// theme (via the registry) and the app's own palette. They were separate once,
+// on the theory that a tool built around daylight should paint itself from the
+// sky rather than from Windows — but two rules for one question drift apart, and
+// the user sees a white window on a black desktop.
 type Theme struct {
 	Enabled bool    `yaml:"enabled"`
 	Mode    string  `yaml:"mode"`
@@ -120,6 +152,7 @@ func Default() Config {
 		},
 		Brightness: Brightness{
 			Enabled:       false,
+			Baseline:      BaselinePanel,
 			DayRatio:      1.0,
 			NightRatio:    0.45,
 			FloorRatio:    0.30,

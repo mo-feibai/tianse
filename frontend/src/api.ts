@@ -20,6 +20,14 @@ export interface Status {
   BrightnessOn: boolean;
   BrightnessOK: boolean;
   BrightnessPercent: number;
+  /** Panel level read at launch, in panel percent. -1 = no backlight. */
+  BrightnessBase: number;
+  /** Multiplier currently applied, in percent. 0 = feature off. */
+  BrightnessRatio: number;
+  /** Which baseline the multiplier applies to: "panel" or "startup". */
+  BrightnessBaseline: string;
+  /** The user moved the backlight by hand; the engine stepped off this display. */
+  BrightnessManual: boolean;
   ThemeOn: boolean;
   ThemeDark: boolean;
   ThemeMode: string;
@@ -99,6 +107,10 @@ export const emptyStatus = (): Status => ({
   BrightnessOn: false,
   BrightnessOK: false,
   BrightnessPercent: -1,
+  BrightnessBase: -1,
+  BrightnessRatio: 0,
+  BrightnessBaseline: "panel",
+  BrightnessManual: false,
   ThemeOn: false,
   ThemeDark: false,
   ThemeMode: "follow_sky",

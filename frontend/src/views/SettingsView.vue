@@ -18,6 +18,14 @@ const props = defineProps<{
   config: any | null;
   cities: City[];
   autostart: boolean;
+  /** Panel level at startup, in panel percent. -1 = no controllable backlight. */
+  brightnessBase: number;
+  /** Multiplier the curve is applying right now, in percent. 0 = off. */
+  brightnessRatio: number;
+  /** Which baseline the ratios multiply: "panel" or "startup". */
+  brightnessBaseline: string;
+  /** The engine stepped off the backlight because the user moved it by hand. */
+  brightnessManual: boolean;
 }>();
 const emit = defineEmits<{
   (e: "input", path: string, value: unknown): void;
@@ -46,8 +54,37 @@ const settle = computed(() => num(temp.value.SettleAfterSunsetMin, 30));
 
 const dayRatio = computed(() => num(bright.value.DayRatio, 1));
 const nightRatio = computed(() => num(bright.value.NightRatio, 0.45));
-const floor = computed(() => num(bright.value.FloorRatio, 0.3));
+const floor = computed(() => num(bright.value.FloorRatio, 0.05));
 const step = computed(() => num(bright.value.StepThreshold, 0.03));
+
+const baseline = computed(() => String(bright.value.Baseline ?? "panel"));
+const BASELINES = [
+  { value: "panel", label: "面板满亮" },
+  { value: "startup", label: "开机亮度" },
+];
+
+// The two baselines differ by one factor: the panel's own full scale versus the
+// level it happened to be at when the app launched. Switching the baseline
+// therefore has to rescale every ratio by the ratio between the two, or the
+// screen jumps the moment the user picks the other word. The factor is derived
+// from the launch reading the engine reports, so no state has to be remembered
+// here and the conversion works in both directions.
+const baselineFactor = (which: string): number => {
+  if (props.brightnessBase <= 0) return 1;
+  return which === "startup" ? props.brightnessBase / 100 : 1;
+};
+
+const clampRatio = (v: number): number => Math.min(1, Math.max(0.05, v));
+
+function setBaseline(next: string) {
+  if (next === baseline.value) return;
+  const k = baselineFactor(baseline.value) / baselineFactor(next);
+  emit("input", "Brightness.Baseline", next);
+  emit("input", "Brightness.DayRatio", clampRatio(dayRatio.value * k));
+  emit("input", "Brightness.NightRatio", clampRatio(nightRatio.value * k));
+  emit("input", "Brightness.FloorRatio", clampRatio(floor.value * k));
+  emit("commit");
+}
 
 const mode = computed(() => String(theme.value.Mode ?? "follow_sky"));
 const darkAt = computed(() => num(theme.value.DarkAt, 4500));
@@ -79,6 +116,19 @@ const coords = computed(() => {
 const timezone = computed(() => String(loc.value.Timezone ?? "—"));
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
+
+// The three ratios below multiply a baseline, and which baseline is a choice.
+// Under "panel" a ratio of 100% means the panel's own maximum, so there is
+// nothing to explain; under "startup" it means the level the panel was at on
+// launch, which is invisible from here and has to be printed.
+const brightnessNote = computed(() => {
+  if (props.brightnessBase < 0) return "此屏不接受亮度控制";
+  if (props.brightnessManual) return "已手动接管，改设置即恢复";
+  if (baseline.value === "panel") return "";
+  const base = props.brightnessBase;
+  if (props.brightnessRatio <= 0) return `开机 ${base}%`;
+  return `开机 ${base}% × ${props.brightnessRatio}% = 面板 ${Math.round((base * props.brightnessRatio) / 100)}%`;
+});
 </script>
 
 <template>
@@ -131,12 +181,16 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
       </section>
 
       <section class="card">
-        <h2 class="head">亮度</h2>
+        <div class="headrow">
+          <h2 class="head">亮度</h2>
+          <span v-if="brightnessNote" class="basis">{{ brightnessNote }}</span>
+          <Segmented :options="BASELINES" :model-value="baseline" @update:model-value="setBaseline" />
+        </div>
         <div class="grid">
           <Slider
             label="白天亮度"
             :model-value="dayRatio"
-            :min="0.3"
+            :min="0.05"
             :max="1"
             :step="0.01"
             :display="pct(dayRatio)"
@@ -146,7 +200,7 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
           <Slider
             label="夜间亮度"
             :model-value="nightRatio"
-            :min="0.3"
+            :min="0.05"
             :max="1"
             :step="0.01"
             :display="pct(nightRatio)"
@@ -156,7 +210,7 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
           <Slider
             label="最低下限"
             :model-value="floor"
-            :min="0.1"
+            :min="0.05"
             :max="1"
             :step="0.01"
             :display="pct(floor)"
@@ -368,6 +422,37 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
   gap: 8px 24px;
 }
 
+/* The brightness ratios multiply a baseline the user picks here, so the switch
+   itself belongs on the heading line: it is a property of the whole card, not of
+   any one slider. The derivation below only appears under "startup" — under
+   "panel" a ratio of 100% is already the panel's own 100% and there is nothing
+   to explain, which is the point of offering that baseline at all. */
+.headrow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 32px;
+}
+
+/* Two characters of heading must never wrap: the brightness row's switch takes
+   most of the width, and a wrapped "明暗" turns a 32 px row into 39 px. */
+.headrow .head {
+  white-space: nowrap;
+}
+
+/* The switch is a property of the whole card, so it sits at the far end of the
+   heading line and the derivation, when there is one, fills the space before
+   it. Both have to stay on this one line: a second line costs 16 px and the wide
+   column has 44 px of slack in total. */
+.headrow .seg {
+  margin-left: auto;
+  /* Four labels at the default 20 px gap come to 284 px, which is more than this
+     row has left once the heading and the hint are placed. Tightening to 16 px
+     keeps them on one line; wrapping them onto two lines makes the row 39 px
+     instead of 32 px and the labels read as broken. */
+  gap: 16px;
+}
+
 .meta {
   margin: 0;
   font-family: var(--font-text);
@@ -375,6 +460,17 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
   line-height: 1.5;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+.basis {
+  margin: 0;
+  font-family: var(--font-text);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .blurb {

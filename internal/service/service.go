@@ -46,6 +46,10 @@ func (s *Service) SaveConfig(cfg config.Config) error {
 	if err := s.store.Update(func(c *config.Config) { *c = cfg }); err != nil {
 		return err
 	}
+	// Saving is the user speaking about the settings, including the brightness
+	// ones, so it also ends any hand-over taken when they moved the backlight on
+	// the monitor itself. Without this the only way back would be a restart.
+	s.engine.ConfigChanged()
 	log.Printf("service: config saved")
 	return nil
 }

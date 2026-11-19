@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"strings"
@@ -40,6 +41,24 @@ type Status struct {
 	BrightnessOn      bool
 	BrightnessOK      bool
 	BrightnessPercent int
+	// BrightnessBase is the level the panel happened to be at when the app
+	// launched, in panel percent; -1 when the panel has no controllable
+	// backlight. BrightnessRatio is the multiplier the curve is applying to the
+	// current baseline, in percent, or 0 while the feature is off.
+	//
+	// Base is not always the number being multiplied — see BrightnessBaseline —
+	// but it is always the launch reading, because that is what the settings
+	// page needs to convert between the two baselines without asking the engine
+	// to remember anything.
+	BrightnessBase  int
+	BrightnessRatio int
+	// BrightnessBaseline is which baseline the ratios multiply: config
+	// BaselinePanel or config BaselineStartup.
+	BrightnessBaseline string
+	// BrightnessManual is true when the user moved the backlight by hand and the
+	// engine has stepped off that display for this run. The reading card says so
+	// instead of showing a number the engine is no longer steering.
+	BrightnessManual bool
 
 	ThemeOn   bool
 	ThemeDark bool
@@ -231,8 +250,10 @@ func (e *Engine) Displays() []screen.Display { return e.mgr.Displays() }
 
 // SetPaused freezes or resumes the whole tool.
 //
-// Pausing restores the original gamma and puts the backlight back to its
-// startup level. The Windows light/dark theme is deliberately left alone: a
+// Pausing restores the original gamma and puts the backlight back to the level
+// it had at launch — the one thing pausing can honestly restore, since "off"
+// means "as if this app were not running". The Windows light/dark theme is
+// deliberately left alone: a
 // theme flip repaints every window, and doing that twice in a second (once on
 // pause, once on resume) is more intrusive than the setting is worth.
 func (e *Engine) SetPaused(paused bool) {
@@ -243,6 +264,9 @@ func (e *Engine) SetPaused(paused bool) {
 	if paused {
 		e.mgr.RestoreOrigin()
 		for dev, base := range e.baseline {
+			if e.manual[dev] {
+				continue
+			}
 			if err := e.mgr.ApplyBrightness(dev, base); err != nil {
 				log.Printf("engine: restore brightness %s: %v", dev, err)
 			}
@@ -318,7 +342,7 @@ func (e *Engine) tick(now time.Time) {
 
 	if !paused && !held {
 		e.applyTemperature(cfg, st)
-		e.applyBrightness(cfg, st)
+		e.applyBrightness(cfg, st, now)
 		e.applyTheme(cfg, st)
 	}
 
@@ -333,6 +357,10 @@ func (e *Engine) tick(now time.Time) {
 	st.Held = held
 	st.GammaOK = !paused && !held && !e.gammaFailed
 	st.BrightnessPercent = e.brightnessPercent(cfg, st, now, !paused && !held)
+	st.BrightnessBase = e.brightnessBase()
+	st.BrightnessRatio = e.brightnessRatioPercent(cfg, st)
+	st.BrightnessBaseline = cfg.Brightness.Baseline
+	st.BrightnessManual = e.manualPrimary()
 	st.Warning = e.warning(cfg, st)
 	e.publish(st)
 }
@@ -513,19 +541,19 @@ func blendRamp(from, to color.Ramp, t float64) color.Ramp {
 // Writes are gated at 3% of the panel range because a DDC transaction costs tens
 // of milliseconds and the display serialises them; writing every second would
 // queue up behind the panel and stutter.
-func (e *Engine) applyBrightness(cfg config.Config, st Status) {
+func (e *Engine) applyBrightness(cfg config.Config, st Status, now time.Time) {
 	if !cfg.Brightness.Enabled {
 		return
 	}
+	e.detectDrift(now)
 	for _, d := range e.mgr.Displays() {
 		if !d.BrightnessSupported {
 			continue
 		}
-		base, ok := e.baseline[d.Device]
-		if !ok || base <= 0 {
+		if e.manual[d.Device] {
 			continue
 		}
-		want := base * brightnessRatio(cfg, st.Progress, d.Device)
+		want := e.baselineOf(cfg, d.Device) * brightnessRatio(cfg, st.Progress, d.Device)
 		if want > 1 {
 			want = 1
 		}
@@ -537,8 +565,98 @@ func (e *Engine) applyBrightness(cfg config.Config, st Status) {
 			continue
 		}
 		e.lastBright[d.Device] = want
+		e.lastWriteAt = now
 		screen.WaitForDDC()
 	}
+}
+
+const (
+	// driftInterval is how long the backlight has to sit untouched before a
+	// reading means anything. Anything shorter and the difference is our own
+	// last write still settling in the panel.
+	driftInterval = 30 * time.Second
+	// driftSlack is how far the panel may differ from what we wrote before the
+	// user is credited with the change. 5% of the panel range is one notch on a
+	// monitor's on-screen menu, well above DDC read-back noise.
+	driftSlack = 0.05
+)
+
+// detectDrift notices when the user moves the backlight by hand and hands that
+// display over to them.
+//
+// Without it the curve drags the panel straight back to the level it computed,
+// and the reading card keeps reporting a number that is no longer on screen. The
+// check only runs while the engine has been idle for a full interval: during a
+// curve step the difference is ours, not the user's.
+func (e *Engine) detectDrift(now time.Time) {
+	if !e.driftAt.IsZero() && now.Sub(e.driftAt) < driftInterval {
+		return
+	}
+	if now.Sub(e.lastWriteAt) < driftInterval {
+		return
+	}
+	e.driftAt = now
+	for _, d := range e.mgr.Displays() {
+		if !d.BrightnessSupported {
+			continue
+		}
+		last, ok := e.lastBright[d.Device]
+		if !ok || last <= 0 {
+			continue
+		}
+		read, ok := e.mgr.ReadBrightness(d.Device)
+		if !ok || !brightnessMoved(read, last) {
+			continue
+		}
+		e.manual[d.Device] = true
+		e.lastBright[d.Device] = read
+		log.Printf("engine: brightness %s moved by hand (%.0f%% to %.0f%%), handing this display back",
+			d.Device, last*100, read*100)
+	}
+}
+
+// brightnessMoved reports whether a panel reading is far enough from what we
+// last wrote to be somebody else's doing.
+func brightnessMoved(read, last float64) bool {
+	return math.Abs(read-last) > driftSlack
+}
+
+// baselineOf returns the level the ratios multiply on one display.
+//
+// "panel" means the panel's own full scale, so a ratio of 1.0 asks for 100% of
+// the panel and the screen can get brighter than it was at launch. "startup"
+// means the level read at launch, so 1.0 means "leave it where it was" and the
+// ratios can only dim. A display with no launch reading falls back to the panel:
+// it is the only baseline that cannot make the screen dimmer by accident.
+func (e *Engine) baselineOf(cfg config.Config, device string) float64 {
+	if cfg.Brightness.Baseline == config.BaselineStartup {
+		if b, ok := e.baseline[device]; ok && b > 0 {
+			return b
+		}
+	}
+	return 1.0
+}
+
+// manualPrimary reports whether the primary display has been handed back to the
+// user. The reading card has one slot, so it follows the same display the
+// percentage does.
+func (e *Engine) manualPrimary() bool {
+	d := primaryDisplay(e.mgr.Displays())
+	if d == nil {
+		return false
+	}
+	return e.manual[d.Device]
+}
+
+// ConfigChanged tells the engine the user just edited the settings.
+//
+// Moving a brightness slider is an explicit instruction about the backlight, so
+// it cancels any hand-over taken earlier: the user is asking the engine to drive
+// again. A restart clears it too, because the map lives only in memory.
+func (e *Engine) ConfigChanged() {
+	e.mu.Lock()
+	e.manual = map[string]bool{}
+	e.mu.Unlock()
 }
 
 // brightnessPercent returns the number the reading card shows on the right.
@@ -556,15 +674,12 @@ func (e *Engine) brightnessPercent(cfg config.Config, st Status, now time.Time, 
 		// invent. The card shows a dash instead.
 		return -1
 	}
-	if cfg.Brightness.Enabled && driving {
-		base, ok := e.baseline[d.Device]
-		if ok && base > 0 {
-			want := base * brightnessRatio(cfg, st.Progress, d.Device)
-			if want > 1 {
-				want = 1
-			}
-			return int(math.Round(want * 100))
+	if cfg.Brightness.Enabled && driving && !e.manual[d.Device] {
+		want := e.baselineOf(cfg, d.Device) * brightnessRatio(cfg, st.Progress, d.Device)
+		if want > 1 {
+			want = 1
 		}
+		return int(math.Round(want * 100))
 	}
 	if now.Sub(e.brightReadAt) >= 5*time.Second {
 		e.brightReadAt = now
@@ -575,12 +690,63 @@ func (e *Engine) brightnessPercent(cfg config.Config, st Status, now time.Time, 
 	return e.brightPercent
 }
 
+// brightnessBase is the panel level the curve multiplies: the reading taken at
+// startup, in panel percent.
+func (e *Engine) brightnessBase() int {
+	d := primaryDisplay(e.mgr.Displays())
+	if d == nil || !d.BrightnessSupported || d.BrightnessMax <= d.BrightnessMin {
+		return -1
+	}
+	base, ok := e.baseline[d.Device]
+	if !ok || base <= 0 {
+		return -1
+	}
+	return int(math.Round(base * 100))
+}
+
+// brightnessRatioPercent is the multiplier the curve is applying right now, in
+// percent. Zero while the feature is off: there is no multiplier then.
+func (e *Engine) brightnessRatioPercent(cfg config.Config, st Status) int {
+	if !cfg.Brightness.Enabled {
+		return 0
+	}
+	d := primaryDisplay(e.mgr.Displays())
+	if d == nil || !d.BrightnessSupported {
+		return 0
+	}
+	return int(math.Round(brightnessRatio(cfg, st.Progress, d.Device) * 100))
+}
+
+// themeAction is what one frame should do about the Windows light/dark
+// preference.
+type themeAction int
+
+const (
+	// themeHold leaves the registry alone. It is the answer while the evidence
+	// is one tick old.
+	themeHold themeAction = iota
+	// themeWrite sets the preference to the value the sky asks for.
+	themeWrite
+	// themeYield hands the switch back to the user.
+	themeYield
+)
+
+// themeStrikesBeforeYield is how many consecutive frames may disagree with the
+// registry before the engine concludes that the user is switching by hand.
+//
+// The number is three because the disagreement has innocent causes that last one
+// or two ticks: a resume repaints from the shell's cache, and a broadcast can
+// land before the registry write is visible to the next reader. One strike would
+// turn any of those into a permanent, silent downgrade to follow_system.
+const themeStrikesBeforeYield = 3
+
 // applyTheme flips the Windows light/dark preference with hysteresis.
 //
 // The gap between DarkAt and LightAt is what stops a temperature hovering at the
 // threshold from repainting the whole desktop every few seconds.
 func (e *Engine) applyTheme(cfg config.Config, st Status) {
 	if !cfg.Theme.Enabled {
+		e.themeForce = false
 		return
 	}
 	if cfg.Theme.Mode == "always_light" || cfg.Theme.Mode == "always_dark" {
@@ -658,6 +824,18 @@ func (e *Engine) warning(cfg config.Config, st Status) string {
 	}
 	if !st.GammaOK && !st.Paused && !st.Held {
 		return "色温写入被系统拒绝，详见日志"
+	}
+	// The user moved the backlight on the monitor itself. Saying so is the only
+	// way they learn why the curve stopped moving the screen — and the sentence
+	// has to name the way back, or it reads as a failure.
+	if st.BrightnessManual && !st.Paused && !st.Held {
+		return "亮度已手动接管，改设置即恢复"
+	}
+	// 192 px of 12 px type fits about sixteen characters on one line, and the
+	// card is 176 px tall: a warning longer than that is clipped, so this says
+	// the one thing that matters — the screen is as warm as the panel allows.
+	if e.cappedScale > 0 && e.cappedScale < 1 && !st.Paused && !st.Held {
+		return fmt.Sprintf("面板上限 %.0f%%，色温已收缩", e.cappedScale*100)
 	}
 	return ""
 }
