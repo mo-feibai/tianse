@@ -32,6 +32,31 @@ func TestCoversRejectsWindowOnAnotherMonitor(t *testing.T) {
 	}
 }
 
+func TestOverlayStylesRejectsCaptureLayer(t *testing.T) {
+	// What a screenshot overlay carries: layered + transparent hit-testing,
+	// and usually WS_EX_NOACTIVATE because it must not steal focus.
+	if !overlayStyles(wsExLayered) {
+		t.Fatal("a layered window must not count as full screen")
+	}
+	if !overlayStyles(wsExTransparent) {
+		t.Fatal("a hit-test transparent window must not count as full screen")
+	}
+	if !overlayStyles(wsExNoActivate) {
+		t.Fatal("a window that refuses activation must not count as full screen")
+	}
+}
+
+func TestOverlayStylesAcceptsRealFullScreenWindow(t *testing.T) {
+	// A borderless game window: plain WS_POPUP, nothing layered or transparent.
+	if overlayStyles(0) {
+		t.Fatal("a plain window must not be mistaken for an overlay")
+	}
+	// WS_EX_TOPMOST alone is not a capture overlay — games use it too.
+	if overlayStyles(0x00000008) {
+		t.Fatal("WS_EX_TOPMOST alone must not mark a window as an overlay")
+	}
+}
+
 func TestCoversRejectsWindowThatLeavesTheTaskbarVisible(t *testing.T) {
 	mon := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
 	wr := rect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}

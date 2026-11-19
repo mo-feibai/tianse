@@ -38,6 +38,14 @@ const (
 	// int index, so the low 32 bits are what the API reads.
 	gwlStyle   = 0xFFFFFFF0
 	wsMaximize = 0x01000000
+
+	// GWL_EXSTYLE is -20; the same 32-bit pattern trick applies.
+	gwlExStyle = 0xFFFFFFEC
+	// Extended styles that mark a window as drawing *over* the desktop rather
+	// than owning it: hit-test transparent, per-pixel alpha, refuses focus.
+	wsExTransparent = 0x00000020
+	wsExLayered     = 0x00080000
+	wsExNoActivate  = 0x08000000
 )
 
 type monitorInfo struct {
@@ -54,11 +62,20 @@ type monitorInfo struct {
 // notification state catches Direct3D exclusive apps, whose window the manager
 // may not describe correctly but which always announce themselves this way.
 func Active() bool {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+
+	// An overlay painting on top of the desktop never owns it, and this has to
+	// be answered before anything else: a capture overlay can put the shell
+	// into a "busy" state while it is up, so the foreground window is the only
+	// witness left in exactly the case that matters.
+	if hwnd != 0 && overlay(hwnd) {
+		return false
+	}
+
 	if d3dFullScreen() {
 		return true
 	}
 
-	hwnd, _, _ := procGetForegroundWindow.Call()
 	if hwnd == 0 {
 		return false
 	}
@@ -98,6 +115,26 @@ func Active() bool {
 		return false
 	}
 	return covers(wr, mi.RcMonitor)
+}
+
+// overlay reports whether the window merely draws over the desktop.
+//
+// The screenshot tools (Snipaste, Snow Shot, Win+Shift+S) all work the same
+// way: a monitor-sized layer you drag a rectangle on, deliberately never
+// focused, often hit-test transparent so the drag reaches it. Every one of
+// those traits is an extended style, and none of them can belong to an app
+// that owns the display — a game or a player takes the foreground and paints
+// into it. Treating such a layer as full screen made the screen flash neutral
+// for the whole length of a capture.
+func overlay(hwnd uintptr) bool {
+	r, _, _ := procGetWindowLongW.Call(hwnd, uintptr(gwlExStyle))
+	return overlayStyles(uint32(r))
+}
+
+// overlayStyles is the decision itself, kept free of window handles so it can
+// be tested without a desktop.
+func overlayStyles(ex uint32) bool {
+	return ex&(wsExTransparent|wsExLayered|wsExNoActivate) != 0
 }
 
 // maximised reports whether the window carries WS_MAXIMIZE.

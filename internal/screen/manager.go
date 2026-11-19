@@ -263,6 +263,32 @@ func (m *Manager) RestoreOrigin() {
 	}
 }
 
+// Drifted reports whether any display's ramp no longer matches what we last
+// wrote. A real full-screen app resets the ramp on entry, so after a hold this
+// answers "did the app wipe our colours, or did nothing happen at all?".
+//
+// The engine uses it to decide whether the way back needs a fade. When nothing
+// was wiped, fading would reintroduce exactly the flash the hold was meant to
+// avoid.
+func (m *Manager) Drifted() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for d, want := range m.last {
+		h, err := m.hdc.get(d)
+		if err != nil {
+			continue
+		}
+		got, err := readGamma(h)
+		if err != nil {
+			continue
+		}
+		if rampMaxDiff(got, want) > 3000 {
+			return true
+		}
+	}
+	return false
+}
+
 // SelfHeal rewrites any display whose ramp no longer matches what we last set.
 // Sleep/wake, resolution changes and exclusive-fullscreen games all reset the
 // hardware ramp behind our back; a cheap read-and-compare every few seconds

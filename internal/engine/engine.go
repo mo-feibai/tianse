@@ -344,10 +344,18 @@ func (e *Engine) tick(now time.Time) {
 	if held != e.held {
 		if held {
 			log.Printf("engine: full-screen app detected, holding the last frame")
-			e.mgr.RestoreOrigin()
+			// No RestoreOrigin here on purpose. An app that really owns the
+			// display resets the ramp itself on entry, so writing the neutral
+			// one first only buys a guaranteed flash on the way in. Leaving our
+			// ramp in place is also what makes a false alarm free: if the hold
+			// was a screenshot overlay, the screen never moved at all.
 		} else {
 			log.Printf("engine: full-screen app gone, resuming")
-			e.resumeAt = now
+			// Fade only if the app actually wiped the ramp. When it is still
+			// ours, a fade is the same flash in reverse.
+			if e.mgr.Drifted() {
+				e.resumeAt = now
+			}
 		}
 		e.held = held
 	}
