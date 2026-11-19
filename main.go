@@ -18,6 +18,7 @@ import (
 	"tianse/internal/logging"
 	"tianse/internal/screen"
 	"tianse/internal/service"
+	"tianse/internal/session"
 	"tianse/internal/trayicon"
 	"tianse/internal/version"
 )
@@ -102,6 +103,7 @@ func main() {
 			},
 		},
 		OnShutdown: func() {
+			session.Stop()
 			eng.Stop()
 		},
 	})
@@ -165,6 +167,10 @@ func main() {
 		mainWindow.Focus()
 	})
 
+	// The watcher has to be up before the loop starts writing: a wake-up that
+	// arrives during startup would otherwise be lost, and the first minutes
+	// after a resume are exactly when the theme is most likely to be wrong.
+	session.Start()
 	eng.Start()
 	go watchTray(tray, pauseItem, statusItem, eng)
 

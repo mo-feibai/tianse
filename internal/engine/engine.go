@@ -21,6 +21,7 @@ import (
 	"tianse/internal/fullscreen"
 	"tianse/internal/nightlight"
 	"tianse/internal/screen"
+	"tianse/internal/session"
 	"tianse/internal/suncalc"
 	"tianse/internal/theme"
 )
@@ -324,6 +325,17 @@ func (e *Engine) tick(now time.Time) {
 	e.mu.RLock()
 	paused := e.paused
 	e.mu.RUnlock()
+
+	// The session watcher reports sign-in, unlock and resume from sleep. The
+	// shell repainted from its own cache during those, so the next frame has to
+	// rewrite the theme preference rather than trust what it last wrote. The
+	// flag is held, not acted on here, so a wake-up that lands while paused or
+	// full-screen still gets its rewrite once writing resumes.
+	select {
+	case <-session.Notify():
+		e.themeForce = true
+	default:
+	}
 
 	// A full-screen window gets the screen untouched. Checking every tick is
 	// cheap (two window queries); polling faster would not help, because the
@@ -775,6 +787,8 @@ func (e *Engine) applyTheme(cfg config.Config, st Status) {
 			log.Printf("engine: theme: %v", err)
 		}
 		e.lastDark, e.themeKnown = want, true
+		e.themeStrikes = 0
+		e.themeForce = false
 		st.ThemeDark = want
 		return
 	}
