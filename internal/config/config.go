@@ -104,7 +104,11 @@ type DisplayOverride struct {
 
 // UI holds the front-end preferences.
 type UI struct {
-	Theme       string `yaml:"theme"`
+	// Theme is retired: Theme.Mode answers for the app's surface as well now.
+	// The field survives only so an older file can be read once and folded in by
+	// migrate — writing it back would recreate the second answer this version
+	// exists to remove, hence omitempty.
+	Theme       string `yaml:"theme,omitempty"`
 	AccentDrift bool   `yaml:"accent_drift"`
 	LastPage    string `yaml:"last_page"`
 }
@@ -173,7 +177,6 @@ func Default() Config {
 		},
 		Displays: map[string]DisplayOverride{},
 		UI: UI{
-			Theme:       "auto",
 			AccentDrift: true,
 			LastPage:    "main",
 		},

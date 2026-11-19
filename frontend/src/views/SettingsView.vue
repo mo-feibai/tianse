@@ -231,12 +231,16 @@ const brightnessNote = computed(() => {
       </section>
 
       <section class="card grow">
-        <h2 class="head">明暗</h2>
-        <Segmented
-          :options="MODES"
-          :model-value="mode"
-          @update:model-value="emit('input', 'Theme.Mode', $event); emit('commit')"
-        />
+        <div class="headrow">
+          <h2 class="head">明暗</h2>
+          <span class="basis">界面与系统同切</span>
+          <Segmented
+            class="seg"
+            :options="MODES"
+            :model-value="mode"
+            @update:model-value="emit('input', 'Theme.Mode', $event); emit('commit')"
+          />
+        </div>
         <h3 class="sub">切换阈值</h3>
         <div class="grid">
           <Slider

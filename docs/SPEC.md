@@ -225,9 +225,9 @@ displays:                     # 多屏，键为显示器设备名
     brightness_ratio: 1.0
 
 ui:
-  theme: "auto"               # auto(跟随天色) | light | dark
   accent_drift: true          # 强调色随色温漂移（青→海绿），关掉则固定 6500K 基准色
   last_page: "main"
+  # 旧版的 ui.theme（auto / light / dark）已并入 theme.mode，迁移时折算并清空
 
 app:
   autostart: false

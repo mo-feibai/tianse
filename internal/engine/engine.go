@@ -411,7 +411,27 @@ func (e *Engine) evaluate(now time.Time, cfg config.Config, loc suncalc.Location
 		BrightnessOn: cfg.Brightness.Enabled,
 	}
 
-	st.SurfaceDark = surfaceDark(now, cs, cfg)
+	// The first frame has no history of its own, so it adopts what the desktop
+	// is showing before judging: starting from a zero value would make a dark
+	// desktop disagree with us on the very first tick, which is what used to
+	// look like a manual change and hand the theme back to follow_system.
+	lastDark := e.lastDark
+	if !e.themeKnown {
+		if dark, err := theme.IsDark(); err == nil {
+			lastDark = dark
+		}
+	}
+	st.SurfaceDark = surfaceDark(now, cs, cfg, lastDark)
+
+	// The card's "下次切换" has to name the same event the shade follows. Under
+	// the sky rule (the curve is off) the curve already reports the right window
+	// end, so only the colour-temperature rule needs to look ahead.
+	if cfg.Theme.Enabled && cfg.Theme.Mode == "follow_sky" && cfg.Temp.Enabled {
+		if flip := nextShadeFlip(now, st.SurfaceDark, cfg, kelvinAt(cfg, loc, p)); !flip.IsZero() {
+			st.NextChange = clockString(flip)
+		}
+	}
+
 	pal := color.DarkPalette(st.Kelvin)
 	if !st.SurfaceDark {
 		pal = color.LightPalette(st.Kelvin)
@@ -762,41 +782,92 @@ func (e *Engine) applyTheme(cfg config.Config, st Status) {
 		if dark, err := theme.IsDark(); err == nil {
 			st.ThemeDark = dark
 		}
+		// Nothing is being driven here, so a pending rewrite would only be a
+		// write to a value the user asked us to stop choosing.
+		e.themeStrikes = 0
+		e.themeForce = false
 		return
 	}
 
 	// follow_sky: hysteresis around the two thresholds.
-	want := e.lastDark
 	if !e.themeKnown {
+		// First frame: adopt whatever the desktop is showing as the baseline.
+		// Skipping this is what used to make every launch look like a manual
+		// change — the zero value is "light", so a dark desktop disagreed with
+		// it on the very first tick and the engine gave up before it had ever
+		// written anything.
 		if dark, err := theme.IsDark(); err == nil {
-			want = dark
+			e.lastDark = dark
 		}
 		e.themeKnown = true
 	}
-	if st.Kelvin <= cfg.Theme.DarkAt {
-		want = true
-	} else if st.Kelvin >= cfg.Theme.LightAt {
-		want = false
+
+	// The frame's own palette already answered this question in evaluate, with
+	// the same thresholds and the same hysteresis. Reusing it is what makes
+	// "one switch" true: there is no second place left that could disagree.
+	want := st.SurfaceDark
+
+	current, err := theme.IsDark()
+	if err != nil {
+		// The registry cannot be read, so there is nothing to compare against.
+		// Write what the sky asks for and let a later frame judge.
+		if err := theme.SetDark(want); err != nil {
+			log.Printf("engine: theme: %v", err)
+			return
+		}
+		e.lastDark = want
+		st.ThemeDark = want
+		return
 	}
 
-	if current, err := theme.IsDark(); err == nil && current != e.lastDark && e.themeKnown {
+	action, strikes := themeStep(e.lastDark, current, want, e.themeStrikes, e.themeForce)
+	e.themeStrikes = strikes
+	switch action {
+	case themeYield:
 		// Someone changed the theme by hand while we were running. Yield to them.
 		log.Printf("engine: external theme change detected, switching to follow_system")
 		_ = e.st.Update(func(c *config.Config) { c.Theme.Mode = "follow_system" })
 		st.ThemeMode = "follow_system"
 		st.ThemeDark = current
 		e.lastDark = current
+		e.themeForce = false
 		return
-	}
-
-	if want != e.lastDark || !e.themeKnown {
+	case themeWrite:
 		if err := theme.SetDark(want); err != nil {
 			log.Printf("engine: theme: %v", err)
 			return
 		}
 		e.lastDark = want
+		e.themeForce = false
 	}
 	st.ThemeDark = e.lastDark
+}
+
+// themeStep decides one frame's action from what the registry holds and what the
+// sky asks for.
+//
+// It is pure so the rule can be tested without a desktop: every interesting case
+// is about how long a disagreement has lasted, not about which window is on
+// screen.
+//
+// forced wins over the strike count on purpose. After a resume the shell repaints
+// from its own cache, so the registry disagreeing with us is the expected state,
+// not evidence about the user; one rewrite is exactly what repairs it.
+func themeStep(lastDark, currentDark, want bool, strikes int, forced bool) (themeAction, int) {
+	if forced {
+		return themeWrite, 0
+	}
+	if currentDark != lastDark {
+		strikes++
+		if strikes < themeStrikesBeforeYield {
+			return themeHold, strikes
+		}
+		return themeYield, 0
+	}
+	if want != lastDark {
+		return themeWrite, 0
+	}
+	return themeHold, 0
 }
 
 // warning returns the one sentence worth interrupting the user with, or "".
@@ -864,21 +935,130 @@ func brightnessRatio(cfg config.Config, progress float64, device string) float64
 }
 
 // surfaceDark decides whether the app itself should be painted on the dark or
-// the light surface. It follows the sky, not Windows: the tool is meant to match
-// the light in the room, and Windows may be following a schedule the user set
-// years ago for a different purpose.
-func surfaceDark(now time.Time, cs curve.State, cfg config.Config) bool {
-	switch cfg.UI.Theme {
-	case "dark":
-		return true
-	case "light":
-		return false
-	case "system":
-		dark, err := theme.IsDark()
-		if err == nil {
-			return dark
-		}
+// the light surface.
+//
+// It reads the same switch, and under follow_sky the same rule, as applyTheme.
+// There used to be two answers to this one question — Theme.Mode for the Windows
+// theme, UI.Theme for the window — and they drifted apart by up to an hour: the
+// desktop turned dark when the colour temperature crossed 4500 K at 16:50, while
+// the window waited for sunset plus thirty minutes at 17:41. A white window on a
+// black desktop reads as a bug, and it was one.
+//
+// Folding the two settings into one was only half the fix: as long as the window
+// judged by sunset and the desktop by colour temperature, the same switch still
+// produced two answers. So under follow_sky both use the colour temperature
+// thresholds, with lastDark as the hysteresis that keeps a value sitting between
+// them from flapping. Those thresholds are already on the settings page, so the
+// one place that decides is also the one place the user can tune.
+//
+// With the temperature curve switched off the kelvin reading is pinned to the
+// daytime value and can never cross a threshold, so the sky rule takes over: the
+// sun is then the only clock left.
+//
+// With the theme feature switched off nothing is being followed, so the window
+// follows Windows: matching the desktop is the honest default for a tool that is
+// not currently driving anything.
+func surfaceDark(now time.Time, cs curve.State, cfg config.Config, lastDark bool) bool {
+	if !cfg.Theme.Enabled {
+		return systemDark(now, cs)
 	}
+	switch cfg.Theme.Mode {
+	case "always_dark":
+		return true
+	case "always_light":
+		return false
+	case "follow_system":
+		return systemDark(now, cs)
+	}
+	if !cfg.Temp.Enabled {
+		return skyDark(now, cs)
+	}
+	if cs.Kelvin <= cfg.Theme.DarkAt {
+		return true
+	}
+	if cs.Kelvin >= cfg.Theme.LightAt {
+		return false
+	}
+	return lastDark
+}
+
+// kelvinAt builds the sampling function nextShadeFlip scans with. It has to pick
+// the same curve evaluate uses, or the lookahead would answer for a schedule the
+// user is not on: a fixed clock table has its own windows and never consults the
+// sun.
+func kelvinAt(cfg config.Config, loc suncalc.Location, p curve.Params) func(time.Time) float64 {
+	if cfg.Schedule.Mode == "fixed" {
+		start, end := parseClock(cfg.Schedule.Fixed.NightStart, 19*time.Hour), parseClock(cfg.Schedule.Fixed.NightEnd, 7*time.Hour)
+		return func(t time.Time) float64 { return curve.FixedEvaluate(t, p, start, end).Kelvin }
+	}
+	return func(t time.Time) float64 { return curve.Evaluate(t, loc, p).Kelvin }
+}
+
+// nextShadeFlip returns the next instant the surface shade changes under
+// follow_sky.
+//
+// The status card calls this number "下次切换", and until the shade was decided
+// by colour temperature it pointed at the end of the evening ramp — 17:40, fifty
+// minutes after the window actually turned dark. A countdown that names the wrong
+// event is the same bug as two rules for one question, so it now reports the flip
+// itself.
+//
+// Scanning beats solving here. The crossing is one acos away inside a single
+// ramp, but the ramps move with the sun every day, a fixed clock schedule has its
+// own windows, and a polar day has none at all; the scan needs no case for any of
+// them. Twelve steps an hour for one day is a few hundred microseconds once a
+// second, and the bisection below brings the answer to the minute.
+func nextShadeFlip(now time.Time, dark bool, cfg config.Config, kelvinAt func(time.Time) float64) time.Time {
+	const step = 5 * time.Minute
+	cur := dark
+	for i := 1; i <= 24*60/int(step/time.Minute); i++ {
+		t := now.Add(time.Duration(i) * step)
+		next := cur
+		switch k := kelvinAt(t); {
+		case k <= cfg.Theme.DarkAt:
+			next = true
+		case k >= cfg.Theme.LightAt:
+			next = false
+		}
+		if next == cur {
+			continue
+		}
+		// The flip is a threshold crossing, so the bisection asks the threshold
+		// rather than the shade: the band between the two thresholds has no
+		// answer of its own, it only inherits one.
+		lo, hi := t.Add(-step), t
+		for hi.Sub(lo) > time.Minute {
+			mid := lo.Add(hi.Sub(lo) / 2)
+			crossed := kelvinAt(mid) <= cfg.Theme.DarkAt
+			if !next {
+				crossed = kelvinAt(mid) >= cfg.Theme.LightAt
+			}
+			if crossed {
+				hi = mid
+			} else {
+				lo = mid
+			}
+		}
+		return hi
+	}
+	return time.Time{}
+}
+
+// systemDark asks Windows, falling back to the sky if the registry cannot be
+// read: a wrong shade is better than a panic, and the sky is the next best guess
+// for a tool whose whole subject is daylight.
+func systemDark(now time.Time, cs curve.State) bool {
+	if dark, err := theme.IsDark(); err == nil {
+		return dark
+	}
+	return skyDark(now, cs)
+}
+
+// skyDark is the daylight rule: dark from thirty minutes after sunset until
+// thirty minutes before sunrise. The half-hour margins keep the flip off the
+// exact minute the sun crosses the horizon, when the screen is still bright
+// enough that a dark window would look premature.
+func skyDark(now time.Time, cs curve.State) bool {
 	if cs.Sunset.IsZero() || cs.Sunrise.IsZero() {
 		return cs.Progress > 0.5
 	}

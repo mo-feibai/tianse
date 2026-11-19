@@ -125,11 +125,6 @@ func normalise(cfg *Config) {
 	if cfg.Schedule.Mode != "sun" && cfg.Schedule.Mode != "fixed" {
 		cfg.Schedule.Mode = "sun"
 	}
-	switch cfg.UI.Theme {
-	case "auto", "light", "dark":
-	default:
-		cfg.UI.Theme = "auto"
-	}
 	if cfg.Displays == nil {
 		cfg.Displays = map[string]DisplayOverride{}
 	}
