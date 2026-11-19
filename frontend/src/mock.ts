@@ -107,12 +107,26 @@ export function previewAxis(): Axis {
     const hour = h % 24;
     ticks.push({ Offset: (h - (17 + 12 / 60) + lead / 60) / (span / 60), Label: String(hour).padStart(2, "0") + ":00" });
   }
-  const nowMin = 22 * 60 + 48 - (17 * 60 + 12);
+  // ?now=17:15 previews a moment where the marker sits a few minutes from the
+  // sunset mark — the case where the two labels used to print on top of each
+  // other. Without it the default 22:48 lands in the middle of the night and the
+  // collision is never visible in a preview.
+  const nowParam = /[?&]now=(\d{1,2}):(\d{2})\b/.exec(location.search);
+  const nowClock = nowParam
+    ? Number(nowParam[1]) * 60 + Number(nowParam[2])
+    : 22 * 60 + 48;
+  // The band runs 15:12 through 08:38 the next morning. An hour before 15:12 is
+  // therefore the *next* day, not a negative offset — but 17:10 is a real
+  // pre-sunset moment and must stay negative (it is two minutes before 17:12).
+  const startClock = 15 * 60 + 12;
+  const nowMin = (nowClock < startClock ? nowClock + 24 * 60 : nowClock) - (17 * 60 + 12);
+  const nowText =
+    String(Math.floor(nowClock / 60) % 24).padStart(2, "0") + ":" + String(nowClock % 60).padStart(2, "0");
   return {
     Stops: stops,
     Ticks: ticks.filter((t) => t.Offset >= 0 && t.Offset <= 1),
     Now: (nowMin + lead) / span,
-    NowText: "22:48",
+    NowText: nowText,
     Start: full ? "15:12" : "17:12",
     End: full ? "08:38" : "06:38",
     SunsetOffset: full ? beforeSunset / span : 0,

@@ -5,7 +5,7 @@
 // The colours come from Go, computed by the same function that builds the gamma
 // ramp. Nothing here is decorative — if the band looks orange at 19:20, the
 // display is orange at 19:20, because both numbers came out of the same call.
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Axis } from "../api";
 
 const props = defineProps<{ axis: Axis | null; nowKelvin: number; paused: boolean; manual: boolean }>();
@@ -16,6 +16,10 @@ const emit = defineEmits<{
 }>();
 
 const band = ref<HTMLElement | null>(null);
+const labelsRow = ref<HTMLElement | null>(null);
+const nowEl = ref<HTMLElement | null>(null);
+const sunsetEl = ref<HTMLElement | null>(null);
+const sunriseEl = ref<HTMLElement | null>(null);
 const dragging = ref(false);
 const dragStarted = ref(0);
 const previewOffset = ref<number | null>(null);
@@ -69,6 +73,96 @@ function markLabelStyle(offset: number) {
   return { left: pct.toFixed(3) + "%", transform: "translateX(-50%)" };
 }
 
+// The three labels are absolutely placed, so they know nothing about each other:
+// at 17:17 the "now" label lands 5 minutes from the sunset label and the two
+// print on top of each other. The band is 656 px wide and the whole sunset-to-
+// sunrise stretch is under 14 hours, so a few minutes is a few pixels — there is
+// no room to nudge either label aside. What does fit is one label instead of
+// two: the sunset (or sunrise) time joins the now label behind a separator, and
+// its own label steps out of the way. The mark line stays, so the event is still
+// marked at its exact position.
+const LABEL_GAP = 10;
+// Once merged, stay merged until the labels are clearly apart. Without this the
+// pair flips back and forth every second as the marker drifts across the
+// boundary, and the text under the axis flickers.
+const LABEL_HYSTERESIS = 10;
+// " · " at 12 px, the separator the merged label puts between the two times.
+const SEPARATOR_WIDTH = 16;
+
+const mergedSunset = ref(false);
+const mergedSunrise = ref(false);
+
+function boxFor(width: number, offset: number, rowWidth: number) {
+  const pct = offset * 100;
+  const left = pct < 8 ? 0 : pct > 92 ? rowWidth - width : (pct / 100) * rowWidth - width / 2;
+  return { left, right: left + width };
+}
+
+function overlaps(a: { left: number; right: number }, left: number, width: number, gap: number) {
+  return a.left < left + width + gap && left < a.right + gap;
+}
+
+function resolveLabels() {
+  const row = labelsRow.value;
+  const now = nowEl.value;
+  const a = props.axis;
+  if (!row || !now || !a || a.Polar) {
+    mergedSunset.value = false;
+    mergedSunrise.value = false;
+    return;
+  }
+  const rowWidth = row.clientWidth;
+  const sunWidth = [sunsetEl.value?.offsetWidth ?? 0, sunriseEl.value?.offsetWidth ?? 0];
+  const sunLeft = [sunsetEl.value?.offsetLeft ?? 0, sunriseEl.value?.offsetLeft ?? 0];
+  // The now label is measured as it is painted. When it is already carrying a
+  // merged time, subtract that part back out: the question is always "would the
+  // plain label collide", and asking it of the wide one would keep it wide.
+  const plainWidth = Math.max(
+    0,
+    now.offsetWidth -
+      (mergedSunset.value ? SEPARATOR_WIDTH + sunWidth[0] : 0) -
+      (mergedSunrise.value ? SEPARATOR_WIDTH + sunWidth[1] : 0),
+  );
+  if (rowWidth <= 0 || plainWidth <= 0) return;
+  const plain = boxFor(plainWidth, markerOffset.value, rowWidth);
+  const gapFor = (merged: boolean) => (merged ? LABEL_GAP + LABEL_HYSTERESIS : LABEL_GAP);
+
+  let sunset = overlaps(plain, sunLeft[0], sunWidth[0], gapFor(mergedSunset.value));
+  let sunrise = overlaps(plain, sunLeft[1], sunWidth[1], gapFor(mergedSunrise.value));
+  if (sunset || sunrise) {
+    // Folding one time in widens the label, which can reach the other one, so
+    // the wider box has to be asked as well.
+    const width = plainWidth + (sunset ? SEPARATOR_WIDTH + sunWidth[0] : 0) + (sunrise ? SEPARATOR_WIDTH + sunWidth[1] : 0);
+    const wide = boxFor(width, markerOffset.value, rowWidth);
+    if (!sunset) sunset = overlaps(wide, sunLeft[0], sunWidth[0], LABEL_GAP);
+    if (!sunrise) sunrise = overlaps(wide, sunLeft[1], sunWidth[1], LABEL_GAP);
+  }
+  mergedSunset.value = sunset;
+  mergedSunrise.value = sunrise;
+}
+
+// Re-measure whenever the answer can change: the axis itself, the marker, or the
+// window width. Fonts land after first paint and change every width, so they get
+// their own hook.
+onMounted(() => {
+  resolveLabels();
+  void nextTick(resolveLabels);
+  document.fonts?.ready.then(() => resolveLabels()).catch(() => {});
+});
+watch(
+  [() => props.axis, markerOffset, () => props.paused],
+  () => void nextTick(resolveLabels),
+  { flush: "post" },
+);
+let resizeObserver: ResizeObserver | undefined;
+watch(labelsRow, (el) => {
+  resizeObserver?.disconnect();
+  if (!el) return;
+  resizeObserver = new ResizeObserver(() => resolveLabels());
+  resizeObserver.observe(el);
+});
+onBeforeUnmount(() => resizeObserver?.disconnect());
+
 // While dragging, the label reports the temperature being previewed rather than
 // the clock time: the clock would not move, and the number would contradict the
 // reading above.
@@ -77,7 +171,11 @@ const nowLabel = computed(() => {
   // here would say the same number twice and leave the one thing the user
   // cannot see anywhere else — how to get back — unsaid.
   if (previewOffset.value !== null) return "预览中 · 松手回到自动";
-  return "现在 " + (props.axis?.NowText ?? "");
+  const a = props.axis;
+  const parts = ["现在 " + (a?.NowText ?? "")];
+  if (mergedSunset.value && a) parts.push("日入 " + a.SunsetText);
+  if (mergedSunrise.value && a) parts.push("日出 " + a.SunriseText);
+  return parts.join(" · ");
 });
 
 // Interpolating the stop list rather than solving the curve again: the band has
@@ -192,14 +290,18 @@ function onBandClick() {
         :style="{ left: (markerOffset * 100).toFixed(3) + '%' }"
       />
 
-      <div class="labels">
+      <div ref="labelsRow" class="labels">
         <!-- The ends are the shoulders of the curve, not events: a clock time
              there would be a fourth and fifth number competing with the three
              that matter. Only the polar case needs text. -->
         <span v-if="axis?.Polar" class="edge-label">无日出日落</span>
+        <!-- Kept in the DOM while merged so its width can still be measured:
+             v-if would make the merge impossible to re-evaluate. -->
         <span
           v-if="!axis?.Polar && axis"
+          ref="sunsetEl"
           class="mark-label"
+          :class="{ merged: mergedSunset }"
           :style="markLabelStyle(axis.SunsetOffset)"
         >日入 {{ axis.SunsetText }}</span>
         <!-- The centre slot holds one thing at a time: the clock, or a message
@@ -207,13 +309,16 @@ function onBandClick() {
         <span v-if="hint" class="hint">{{ hint }}</span>
         <span
           v-else-if="!axis?.Polar"
+          ref="nowEl"
           class="now-label"
           :class="{ previewing: previewOffset !== null }"
           :style="nowLabelStyle"
         >{{ nowLabel }}</span>
         <span
           v-if="!axis?.Polar && axis"
+          ref="sunriseEl"
           class="mark-label"
+          :class="{ merged: mergedSunrise }"
           :style="markLabelStyle(axis.SunriseOffset)"
         >日出 {{ axis.SunriseText }}</span>
         <span v-if="axis?.Polar" class="edge-label">固定时间表</span>
@@ -384,6 +489,12 @@ function onBandClick() {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+/* Folded into the now label: still laid out (its width feeds the merge test),
+   just not painted. visibility keeps the box, display:none would zero it. */
+.mark-label.merged {
+  visibility: hidden;
 }
 
 .hint {
