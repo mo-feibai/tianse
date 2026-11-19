@@ -3,6 +3,7 @@
 package screen
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -235,7 +236,7 @@ func readGamma(h windows.Handle) ([3][256]uint16, error) {
 	var ramp [3][256]uint16
 	r, _, e := procGetDeviceGammaRamp.Call(uintptr(h), uintptr(unsafe.Pointer(&ramp)))
 	if r == 0 {
-		return ramp, fmt.Errorf("GetDeviceGammaRamp: %w", e)
+		return ramp, fmt.Errorf("GetDeviceGammaRamp: %s", rampError(e))
 	}
 	return ramp, nil
 }
@@ -243,7 +244,22 @@ func readGamma(h windows.Handle) ([3][256]uint16, error) {
 func writeGamma(h windows.Handle, ramp *[3][256]uint16) error {
 	r, _, e := procSetDeviceGammaRamp.Call(uintptr(h), uintptr(unsafe.Pointer(ramp)))
 	if r == 0 {
-		return fmt.Errorf("SetDeviceGammaRamp: %w", e)
+		return fmt.Errorf("SetDeviceGammaRamp: %s", rampError(e))
 	}
 	return nil
+}
+
+// rampError describes a rejected ramp in words that match what happened.
+//
+// The gamma calls return 0 on failure but the display driver leaves the
+// last-error slot untouched, so the syscall error is ERROR_SUCCESS and printing
+// it produces "SetDeviceGammaRamp: The operation completed successfully." — a
+// failure reported as a success, once per second, forever. An adapter refuses a
+// ramp when the colour shift is larger than it allows; that is the only cause
+// seen in practice, so it is what the message says.
+func rampError(e error) string {
+	if e == nil || errors.Is(e, windows.ERROR_SUCCESS) {
+		return "the adapter refused the ramp without setting an error code (the colour shift is larger than this driver allows)"
+	}
+	return e.Error()
 }

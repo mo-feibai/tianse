@@ -80,8 +80,36 @@ type Engine struct {
 	lastBright map[string]float64 // last fraction written, for the 3% gate
 	lastDark   bool
 	themeKnown bool
-	driftOK    bool
-	tickCount  int
+
+	// themeStrikes counts consecutive ticks where the registry holds something
+	// other than what we last wrote. One such tick is noise — Explorer
+	// repainting, a broadcast that landed on the wrong desktop, a resume that
+	// restored the shell's cached theme — and only a run of them means the user
+	// is driving the switch by hand.
+	themeStrikes int
+
+	// themeForce asks for one unconditional rewrite of the preference on the
+	// next frame allowed to write. Set when the session comes back: the shell
+	// spent the interval on the lock screen or asleep, so it repainted from its
+	// own cache and our earlier write is no longer what is on screen.
+	themeForce bool
+
+	// driftAt is when the backlight was last read to see whether the user moved
+	// it by hand, and lastWriteAt is when the engine last wrote a level. The
+	// check only runs while both are at least half a minute old: a write inside
+	// that window makes any difference ours, not the user's.
+	driftAt     time.Time
+	lastWriteAt time.Time
+
+	// manual marks displays the user took over by moving the backlight by hand.
+	// The engine stops writing to them for the rest of the run: fighting a hand
+	// on the monitor's own buttons is a fight the software always loses, and
+	// losing it means the screen drifts back to a level the user did not ask
+	// for, once a minute, forever. Cleared when the user touches a brightness
+	// setting (ConfigChanged).
+	manual map[string]bool
+
+	tickCount int
 
 	// brightPercent is the number the reading card shows. While the engine is
 	// driving the backlight it is the target; the rest of the time it is what
@@ -108,6 +136,21 @@ type Engine struct {
 	// the screen.
 	gammaFailed bool
 
+	// gammaWarned remembers which displays are currently refusing the ramp, so a
+	// permanent refusal is logged once instead of once per second. The log is
+	// the only place the full error text survives, and a message repeated 3600
+	// times an hour buries every other line in the file.
+	gammaWarned map[string]bool
+
+	// scaleNoted remembers which displays had to be written below the requested
+	// strength because their driver caps the colour shift. Also logged once.
+	scaleNoted map[string]bool
+
+	// cappedScale is the smallest fraction any display accepted this tick, or 0
+	// when every display took the ramp at full strength. The status card turns a
+	// value below 1 into "as warm as this panel goes".
+	cappedScale float64
+
 	// resumeAt is when the last full-screen hold ended. For two seconds after
 	// that the ramp is blended from identity back to the live curve, so leaving
 	// a game does not slam the screen from neutral to 3400 K in one frame.
@@ -118,13 +161,15 @@ type Engine struct {
 // manager.
 func New(st *config.Store, mgr *screen.Manager) *Engine {
 	e := &Engine{
-		st:         st,
-		mgr:        mgr,
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		baseline:   map[string]float64{},
-		lastBright: map[string]float64{},
-		driftOK:    true,
+		st:          st,
+		mgr:         mgr,
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		baseline:    map[string]float64{},
+		lastBright:  map[string]float64{},
+		manual:      map[string]bool{},
+		gammaWarned: map[string]bool{},
+		scaleNoted:  map[string]bool{},
 	}
 	for _, d := range mgr.Displays() {
 		if d.BrightnessSupported && d.BrightnessMax > d.BrightnessMin {
@@ -373,6 +418,7 @@ func (e *Engine) evaluate(now time.Time, cfg config.Config, loc suncalc.Location
 // The per-display offset exists because two panels of different generations sit
 // side by side and the same ramp reads differently on each.
 func (e *Engine) applyTemperature(cfg config.Config, st Status) {
+	e.cappedScale = 0
 	displays := e.mgr.Displays()
 	for _, d := range displays {
 		kelvin := st.Kelvin
@@ -391,11 +437,37 @@ func (e *Engine) applyTemperature(cfg config.Config, st Status) {
 			ramp = blendRamp(color.IdentityRamp(), ramp, blend)
 		}
 		if err := e.mgr.Apply(d.Device, [3][256]uint16(ramp)); err != nil {
-			log.Printf("engine: gamma %s: %v", d.Device, err)
+			// Once per display per failure streak. The adapter refuses the same
+			// ramp forever once it is past its limit, so repeating the line every
+			// second only fills the log file.
+			if !e.gammaWarned[d.Device] {
+				log.Printf("engine: gamma %s: %v", d.Device, err)
+				e.gammaWarned[d.Device] = true
+			}
 			e.gammaFailed = true
 			continue
 		}
+		if e.gammaWarned[d.Device] {
+			log.Printf("engine: gamma %s: accepted again", d.Device)
+			delete(e.gammaWarned, d.Device)
+		}
 		e.gammaFailed = false
+
+		// The adapter may have taken less than the requested strength. Record it
+		// so the status card can say the screen is as warm as this panel allows
+		// instead of pretending the setting was honoured.
+		if s := e.mgr.Scale(d.Device); s < 1 {
+			if !e.scaleNoted[d.Device] {
+				log.Printf("engine: gamma %s: panel caps the colour shift, writing at %.0f%% strength", d.Device, s*100)
+				e.scaleNoted[d.Device] = true
+			}
+			if e.cappedScale == 0 || s < e.cappedScale {
+				e.cappedScale = s
+			}
+		} else {
+			delete(e.scaleNoted, d.Device)
+			e.cappedScale = 0
+		}
 	}
 }
 

@@ -17,15 +17,25 @@ type Manager struct {
 	origin  map[string][3][256]uint16
 	last    map[string][3][256]uint16
 	display []Display
+
+	// ceiling is how much of a requested tint each adapter actually accepts, as
+	// a fraction of full strength. Display drivers refuse a ramp whose colour
+	// shift exceeds a limit they never publish (an NVIDIA panel here stops at
+	// roughly |ramp - linear| = 32000 of 65535, which is about 3254 K), and the
+	// refusal arrives as a bare false with no error code. Learning the limit
+	// once turns a permanent failure into a slightly weaker tint, and keeps the
+	// engine from retrying a write that will never be accepted.
+	ceiling map[string]float64
 }
 
 // NewManager builds a manager and snapshots every display's current ramp.
 func NewManager() (*Manager, error) {
 	m := &Manager{
-		hdc:    newHDCCache(),
-		ddc:    newDDCState(),
-		origin: map[string][3][256]uint16{},
-		last:   map[string][3][256]uint16{},
+		hdc:     newHDCCache(),
+		ddc:     newDDCState(),
+		origin:  map[string][3][256]uint16{},
+		last:    map[string][3][256]uint16{},
+		ceiling: map[string]float64{},
 	}
 	if err := m.Refresh(); err != nil {
 		return nil, err
@@ -95,8 +105,13 @@ func (m *Manager) Primary() string {
 	return ""
 }
 
-// Apply writes a ramp to one display. It returns the previous ramp so callers
-// can tell whether anything changed.
+// Apply writes a ramp to one display.
+//
+// A ramp the adapter refuses is retried at reduced strength rather than
+// abandoned: the driver's limit is a hard ceiling on how warm the screen can
+// get, and landing just under it is what the user actually asked for. The
+// accepted fraction is remembered per display, so only the first refusal costs
+// the search.
 func (m *Manager) Apply(device string, ramp [3][256]uint16) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,18 +120,75 @@ func (m *Manager) Apply(device string, ramp [3][256]uint16) error {
 	if err != nil {
 		return err
 	}
-	if prev, ok := m.last[device]; ok {
-		diff := rampMaxDiff(prev, ramp)
-		if diff < 655 {
-			// Less than 1% of full scale: invisible, skip the call.
+	if prev, ok := m.last[device]; ok && rampMaxDiff(prev, ramp) < 655 {
+		// Less than 1% of full scale: invisible, skip the call.
+		return nil
+	}
+
+	// Always ask for the full ramp first. A known ceiling is only where the
+	// search starts, never a multiplier applied up front: the limit depends on
+	// how far this particular ramp departs from linear, so a mild daytime ramp
+	// must be allowed to go in at full strength even when last night's deep one
+	// had to be reduced. Pre-scaling would keep every later ramp dimmer than
+	// asked for, forever, for no reason.
+	err = writeGamma(h, &ramp)
+	if err == nil {
+		m.last[device] = ramp
+		delete(m.ceiling, device)
+		return nil
+	}
+
+	start := 0.95
+	if s, ok := m.ceiling[device]; ok && s < start {
+		start = s
+	}
+	for s := start; s >= 0.55; s -= 0.05 {
+		cand := scaleRamp(ramp, s)
+		if writeGamma(h, &cand) == nil {
+			m.last[device] = cand
+			m.ceiling[device] = s
 			return nil
 		}
 	}
-	if err := writeGamma(h, &ramp); err != nil {
-		return err
+	return err
+}
+
+// Scale reports how much of the requested tint a display accepted, in [0,1].
+// The engine uses it to say "this panel only takes 85% of the warmth" instead
+// of silently drawing something dimmer than the setting claims.
+func (m *Manager) Scale(device string) float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.ceiling[device]; ok {
+		return s
 	}
-	m.last[device] = ramp
-	return nil
+	return 1
+}
+
+// scaleRamp pulls a ramp towards the identity ramp by strength, keeping the
+// requested hue but reducing how far the channels are pushed apart.
+func scaleRamp(ramp [3][256]uint16, strength float64) [3][256]uint16 {
+	if strength >= 1 {
+		return ramp
+	}
+	if strength < 0 {
+		strength = 0
+	}
+	var out [3][256]uint16
+	for c := 0; c < 3; c++ {
+		for i := 0; i < 256; i++ {
+			base := float64(i * 257)
+			v := base + (float64(ramp[c][i])-base)*strength
+			if v < 0 {
+				v = 0
+			}
+			if v > 65535 {
+				v = 65535
+			}
+			out[c][i] = uint16(v + 0.5)
+		}
+	}
+	return out
 }
 
 // ApplyBrightness sets a DDC/CI brightness. value is a fraction of the panel

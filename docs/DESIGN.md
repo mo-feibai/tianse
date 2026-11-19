@@ -850,6 +850,35 @@ WebView2 是 Chromium 内核，直接支持 woff2 + `@font-face`。
 
 ---
 
+## 7.6 面板不接受这么暖时
+
+Gamma Ramp 不是想写多暖就写多暖。显示驱动对 ramp 偏离线性的**幅度**有上限，超过就拒绝，而且这个上限从不公布、因屏而异。本机实测（NVIDIA GTX 1650 + 1920×1080 面板）：`|ramp − 线性|` 约 32000（65535 量程）以内接受，折合色温约 **3254 K**。
+
+| 色温 | 最大偏差 | 写入 |
+|---|---|---|
+| 3400 K | 30,796 | ✅ |
+| 3254 K | 33,030 | ❌ |
+| 3200 K | 33,893 | ❌ |
+| 2700 K | 43,072 | ❌ |
+
+#### 拒绝是个哑巴
+
+`SetDeviceGammaRamp` 失败时返回 0，但**不设置 last-error**。于是 `GetLastError()` 是 `ERROR_SUCCESS`，把 errno 拼进错误文本就得到一句「The operation completed successfully.」——一次真实的失败被写成成功，每秒一条，塞满日志。现在 `screen.rampError()` 专门认这个组合，说人话：「the adapter refused the ramp without setting an error code」。
+
+#### 学一次上限，之后按上限写
+
+`Manager.Apply` 先按**全强度**写。被拒时从 95% 起、每次减 5% 往下搜，第一个被接受的强度记进 `Manager.ceiling`，同时把 `m.last` 更新成实际写进去的那条 ramp。
+
+**已知上限只作为搜索起点，不作为前置乘数。** 第一版把 ceiling 直接乘在 ramp 上再写，结果是白天 6500 K 也被压到 90%——上限取决于这条 ramp 偏离线性多远，白天那条本来就能全强度写入。正确做法是每次都先试全强度，只有被拒才落到 ceiling 附近。
+
+代价：极低色温下蓝通道被压平，暗部可能出现轻微色偏；状态卡提示一次「面板上限 N%，色温已收缩」，不假装设置被兑现了。
+
+#### 日志只说一次
+
+同一块屏连续被拒只记首条，恢复时补一行 `accepted again`。理由：一条永远不会变化的失败重复 3600 次/小时，会把 `config saved`、`external theme change`、`full-screen app` 这些真正有用的行全部挤出 1 MiB × 4 的日志预算。
+
+---
+
 ## 8. 自洽检查
 
 界面交付前逐条确认：
