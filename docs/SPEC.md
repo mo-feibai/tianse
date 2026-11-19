@@ -239,7 +239,7 @@ app:
 - [x] 应用图标 `.ico`（16/24/32/48/64/128/256），主题「日轮半沉于地平线」——`scripts/gen-icon`
 - [x] 托盘图标 16×16 单色（三态：正常/暂停/失败 + 暗色变体）
 - [x] 开源协议文件（MIT）
-- [x] 起始版本号 v0.1.0
+- [x] 起始版本号 v0.1.0，当前 v0.2.0；版本号单一源 = 仓库根目录 `VERSION`，打包脚本 `-Bump patch|minor|major` 递增并写回
 - [x] 噪点纹理 `frontend/public/textures/noise-128.png`
 - [x] 字体子集产物 `frontend/public/fonts/*.woff2`（京华 293 KB / 霞鹜 1003 KB，脚本 `scripts/subset-fonts.py`；源文件见 `assets/fonts/README.md`）
 - [x] 强调色/墨灰的五锚点表（Go 常量 `internal/color/drift.go`；6500/5725/4950/4175/3400）
@@ -254,4 +254,4 @@ app:
 | 2 | DDC/CI 亮度 | 基线采样、3% 节流、30% 下限、基线漂移检测；DDC 不可用时不崩 |
 | 3 | 明暗切换 | 滞回判定、全局广播、用户手改检测与降级 |
 | 4 | 设置界面 | Vue3 + 天光轴 + 配置读写迁移；强调色随色温漂移 + 源色预补偿（DESIGN §2.7）；同窗口第二页设置页（位置/色温/亮度/明暗/关于） |
-| 5 | 打包 | 绿色版单 exe + Inno Setup 安装包；产物 `.build/bin/tianse.exe`（11.5 MB）与 `bin/tianse-0.1.0-setup.exe`（6.3 MB），一条命令 `pwsh -File scripts/package.ps1`。**安装器需在有桌面合成的机器上复验**（本机无 dwm/explorer，setup.exe 启动即退，最小 Inno 工程同样复现，已排除六项环境原因） |
+| 5 | 打包 | 绿色版单 exe + Inno Setup 安装包；产物 `.build/bin/tianse.exe`（11.5 MB）与 `bin/tianse-<版本>-setup.exe`（6.3 MB），一条命令 `pwsh -File scripts/package.ps1`；版本号单一源 `VERSION`，`-Bump patch|minor|major` 按改动规模递增；两个产物打包后落 Medium 完整性标签，并复制到仓库外的发布目录 `../tianse-dist`——从那里双击安装包既不弹「无法验证发布者」（那是工作区 Low 标签把路径映射成 Internet 区域，与签名无关），也不会报「错误 5」 |

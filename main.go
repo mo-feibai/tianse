@@ -19,6 +19,7 @@ import (
 	"tianse/internal/screen"
 	"tianse/internal/service"
 	"tianse/internal/trayicon"
+	"tianse/internal/version"
 )
 
 //go:embed all:frontend/dist
@@ -33,7 +34,12 @@ func main() {
 	// The report has to work on a machine where nothing else works, so it runs
 	// before logging, config and the display manager are touched.
 	diag := flag.Bool("diagnose", false, "打印环境诊断报告后退出")
+	showVersion := flag.Bool("version", false, "打印版本号后退出")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.String())
+		return
+	}
 	if *diag {
 		fmt.Print(diagnose.Report())
 		return

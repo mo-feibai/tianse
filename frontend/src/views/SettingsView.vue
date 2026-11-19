@@ -26,9 +26,10 @@ const emit = defineEmits<{
   (e: "autostart", enabled: boolean): void;
 }>();
 
-// Version is a build constant, not a setting. Keep it beside the only place that
-// shows it rather than threading it through the binding layer for one label.
-const VERSION = "0.1.0";
+// Version is a build constant, not a setting. vite.config.ts reads it from the
+// VERSION file at the repository root, the same file the installer and the Go
+// build use, so there is nothing to keep in sync by hand.
+const VERSION = __APP_VERSION__;
 
 const num = (v: unknown, fallback: number): number =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;

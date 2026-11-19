@@ -23,6 +23,7 @@ import (
 	"tianse/internal/nightlight"
 	"tianse/internal/screen"
 	"tianse/internal/theme"
+	"tianse/internal/version"
 )
 
 var (
@@ -77,6 +78,7 @@ func Report() string {
 	}
 
 	line("天色 诊断报告")
+	line("版本      %s", version.String())
 	line("生成时间  %s", time.Now().Format("2006-01-02 15:04:05"))
 	line("")
 
