@@ -154,8 +154,11 @@ export function previewStatus(): Status {
   const capMatch = /[?&]cap=(\d+)\b/.exec(location.search);
   const cap = capMatch ? Number(capMatch[1]) : 0;
   // ?bsup=1 previews the "startup" baseline, where the reading card has to print
-  // the arithmetic; ?bman=1 previews a display the user took over by hand.
+  // the arithmetic; ?bfix=NN previews the "fixed" baseline at NN% of the panel;
+  // ?bman=1 previews a display the user took over by hand.
   const baselineStartup = /[?&]bsup=1\b/.test(location.search);
+  const bfixMatch = /[?&]bfix=(\d+)\b/.exec(location.search);
+  const fixedPct = bfixMatch ? Number(bfixMatch[1]) : 0;
   const brightnessManual = /[?&]bman=1\b/.test(location.search);
   // ?mode=always_dark previews the switch that now drives both surfaces; the
   // window has to follow it without waiting for the sky.
@@ -175,7 +178,8 @@ export function previewStatus(): Status {
     BrightnessPercent: 23,
     BrightnessBase: 23,
     BrightnessRatio: 100,
-    BrightnessBaseline: baselineStartup ? "startup" : "panel",
+    BrightnessFixedBase: fixedPct,
+    BrightnessBaseline: baselineStartup ? "startup" : fixedPct > 0 ? "fixed" : "panel",
     BrightnessManual: brightnessManual,
     ThemeOn: true,
     ThemeDark: mode === "always_dark",
@@ -201,16 +205,19 @@ export function previewConfig(): any {
   const q = new URLSearchParams(location.search);
   const firstRun = q.get("first") !== "0";
   const baselineStartup = q.get("bsup") === "1";
+  // ?bfix=NN previews the fixed baseline at NN% of the panel.
+  const fixedPct = Number(q.get("bfix") ?? 0) || 0;
   // ?mode=follow_system previews the other three answers of the one switch that
   // now drives both the window and the Windows theme.
   const mode = q.get("mode") || "follow_sky";
   return {
-    Version: 3,
+    Version: 4,
     Location: { City: "杭州", Latitude: 30.2741, Longitude: 120.1551, Timezone: "Asia/Shanghai" },
     Temp: { Enabled: true, Day: 6500, Night: 3400, StartBeforeSunsetMin: 120, SettleAfterSunsetMin: 30 },
     Brightness: {
       Enabled: true,
-      Baseline: baselineStartup ? "startup" : "panel",
+      Baseline: baselineStartup ? "startup" : fixedPct > 0 ? "fixed" : "panel",
+      BasePercent: fixedPct,
       DayRatio: 1,
       NightRatio: 0.45,
       FloorRatio: 0.05,

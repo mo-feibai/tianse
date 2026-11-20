@@ -98,9 +98,22 @@ func normalise(cfg *Config) {
 	}
 
 	switch cfg.Brightness.Baseline {
-	case BaselinePanel, BaselineStartup:
+	case BaselinePanel, BaselineStartup, BaselineFixed:
 	default:
 		cfg.Brightness.Baseline = BaselinePanel
+	}
+	// A fixed baseline needs an actual panel percentage. Zero means the user has
+	// not picked one; the settings page fills it in when "fixed" is chosen, but a
+	// hand-edited file could ask for "fixed" with no value — fall back to panel
+	// so the engine never multiplies by zero.
+	if cfg.Brightness.Baseline == BaselineFixed && cfg.Brightness.BasePercent <= 0 {
+		cfg.Brightness.Baseline = BaselinePanel
+	}
+	if cfg.Brightness.BasePercent < 0 {
+		cfg.Brightness.BasePercent = 0
+	}
+	if cfg.Brightness.BasePercent > 100 {
+		cfg.Brightness.BasePercent = 100
 	}
 
 	cfg.Brightness.DayRatio = clamp01(cfg.Brightness.DayRatio, 1.0)

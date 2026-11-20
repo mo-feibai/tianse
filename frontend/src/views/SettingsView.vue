@@ -22,7 +22,9 @@ const props = defineProps<{
   brightnessBase: number;
   /** Multiplier the curve is applying right now, in percent. 0 = off. */
   brightnessRatio: number;
-  /** Which baseline the ratios multiply: "panel" or "startup". */
+  /** The fixed baseline in panel percent, or 0 if unset. */
+  brightnessFixedBase: number;
+  /** Which baseline the ratios multiply: "panel", "startup" or "fixed". */
   brightnessBaseline: string;
   /** The engine stepped off the backlight because the user moved it by hand. */
   brightnessManual: boolean;
@@ -58,28 +60,50 @@ const floor = computed(() => num(bright.value.FloorRatio, 0.05));
 const step = computed(() => num(bright.value.StepThreshold, 0.03));
 
 const baseline = computed(() => String(bright.value.Baseline ?? "panel"));
+const fixedPct = computed(() => num(bright.value.BasePercent, 0));
 const BASELINES = [
   { value: "panel", label: "面板满亮" },
   { value: "startup", label: "开机亮度" },
+  { value: "fixed", label: "固定基准" },
 ];
 
-// The two baselines differ by one factor: the panel's own full scale versus the
-// level it happened to be at when the app launched. Switching the baseline
-// therefore has to rescale every ratio by the ratio between the two, or the
-// screen jumps the moment the user picks the other word. The factor is derived
-// from the launch reading the engine reports, so no state has to be remembered
-// here and the conversion works in both directions.
-const baselineFactor = (which: string): number => {
-  if (props.brightnessBase <= 0) return 1;
-  return which === "startup" ? props.brightnessBase / 100 : 1;
+// The three baselines differ by one factor: the panel's own full scale, the
+// level it happened to be at when the app launched, or a panel percentage the
+// user fixed. Switching the baseline has to rescale every ratio by the ratio
+// between the two, or the screen jumps the moment the user picks another word.
+// The factors come from numbers the engine reports, so nothing has to be
+// remembered here and the conversion works in both directions.
+const factorOf = (which: string, pct: number): number => {
+  if (which === "startup") return props.brightnessBase > 0 ? props.brightnessBase / 100 : 1;
+  if (which === "fixed") return pct > 0 ? pct / 100 : 1;
+  return 1;
 };
+const baselineFactor = (which: string): number => factorOf(which, fixedPct.value);
 
 const clampRatio = (v: number): number => Math.min(1, Math.max(0.05, v));
 
 function setBaseline(next: string) {
   if (next === baseline.value) return;
-  const k = baselineFactor(baseline.value) / baselineFactor(next);
+  // Picking "fixed" for the first time needs a value. Seed it with the launch
+  // reading so the screen does not move on the switch; the user can edit it next.
+  const newFixed = next === "fixed" && fixedPct.value <= 0
+    ? (props.brightnessBase > 0 ? props.brightnessBase : 100)
+    : fixedPct.value;
+  const k = baselineFactor(baseline.value) / factorOf(next, newFixed);
   emit("input", "Brightness.Baseline", next);
+  if (newFixed !== fixedPct.value) emit("input", "Brightness.BasePercent", newFixed);
+  emit("input", "Brightness.DayRatio", clampRatio(dayRatio.value * k));
+  emit("input", "Brightness.NightRatio", clampRatio(nightRatio.value * k));
+  emit("input", "Brightness.FloorRatio", clampRatio(floor.value * k));
+  emit("commit");
+}
+
+function setFixedBase(e: Event) {
+  const raw = Number((e.target as HTMLInputElement).value);
+  const pct = Math.min(100, Math.max(5, Math.round(raw)));
+  (e.target as HTMLInputElement).value = String(pct);
+  const k = baselineFactor("fixed") / (pct / 100);
+  emit("input", "Brightness.BasePercent", pct);
   emit("input", "Brightness.DayRatio", clampRatio(dayRatio.value * k));
   emit("input", "Brightness.NightRatio", clampRatio(nightRatio.value * k));
   emit("input", "Brightness.FloorRatio", clampRatio(floor.value * k));
@@ -120,11 +144,12 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
 // The three ratios below multiply a baseline, and which baseline is a choice.
 // Under "panel" a ratio of 100% means the panel's own maximum, so there is
 // nothing to explain; under "startup" it means the level the panel was at on
-// launch, which is invisible from here and has to be printed.
+// launch. Under "fixed" the headrow already shows the number, so neither needs
+// a second line here.
 const brightnessNote = computed(() => {
   if (props.brightnessBase < 0) return "此屏不接受亮度控制";
   if (props.brightnessManual) return "已手动接管，改设置即恢复";
-  if (baseline.value === "panel") return "";
+  if (baseline.value !== "startup") return "";
   const base = props.brightnessBase;
   if (props.brightnessRatio <= 0) return `开机 ${base}%`;
   return `开机 ${base}% × ${props.brightnessRatio}% = 面板 ${Math.round((base * props.brightnessRatio) / 100)}%`;
@@ -184,6 +209,9 @@ const brightnessNote = computed(() => {
         <div class="headrow">
           <h2 class="head">亮度</h2>
           <span v-if="brightnessNote" class="basis">{{ brightnessNote }}</span>
+          <label v-if="baseline === 'fixed'" class="fixedbase">
+            基准<input class="fixednum" type="number" min="5" max="100" step="1" :value="fixedPct || props.brightnessBase" @change="setFixedBase" />%
+          </label>
           <Segmented :options="BASELINES" :model-value="baseline" @update:model-value="setBaseline" />
         </div>
         <div class="grid">
@@ -450,10 +478,9 @@ const brightnessNote = computed(() => {
    column has 44 px of slack in total. */
 .headrow .seg {
   margin-left: auto;
-  /* Four labels at the default 20 px gap come to 284 px, which is more than this
-     row has left once the heading and the hint are placed. Tightening to 16 px
-     keeps them on one line; wrapping them onto two lines makes the row 39 px
-     instead of 32 px and the labels read as broken. */
+  /* Three labels at the default 20 px gap crowd the fixed-baseline input off
+     this row. Tightening to 16 px keeps everything on one line; wrapping onto two
+     lines makes the row 39 px instead of 32 px and the labels read as broken. */
   gap: 16px;
 }
 
@@ -464,6 +491,29 @@ const brightnessNote = computed(() => {
   line-height: 1.5;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+/* The fixed-baseline value lives on the heading line too, since it is a property
+   of the whole card. The number box is kept narrow so "基准 NN%" stays one line. */
+.fixedbase {
+  margin: 0;
+  font-family: var(--font-text);
+  font-size: 12px;
+  color: var(--ink);
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.fixednum {
+  width: 40px;
+  padding: 2px 4px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text);
+  background: var(--sunk);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
 }
 
 .basis {

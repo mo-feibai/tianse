@@ -53,8 +53,12 @@ type Status struct {
 	// to remember anything.
 	BrightnessBase  int
 	BrightnessRatio int
+	// BrightnessFixedBase is the user-chosen fixed baseline in panel percent,
+	// or 0 when none is set. The settings page needs it to show and edit the
+	// fixed value; the launch reading alone cannot stand in for it.
+	BrightnessFixedBase int
 	// BrightnessBaseline is which baseline the ratios multiply: config
-	// BaselinePanel or config BaselineStartup.
+	// BaselinePanel, BaselineStartup or BaselineFixed.
 	BrightnessBaseline string
 	// BrightnessManual is true when the user moved the backlight by hand and the
 	// engine has stepped off that display for this run. The reading card says so
@@ -379,6 +383,7 @@ func (e *Engine) tick(now time.Time) {
 	st.BrightnessPercent = e.brightnessPercent(cfg, st, now, !paused && !held)
 	st.BrightnessBase = e.brightnessBase()
 	st.BrightnessRatio = e.brightnessRatioPercent(cfg, st)
+	st.BrightnessFixedBase = int(math.Round(cfg.Brightness.BasePercent))
 	st.BrightnessBaseline = cfg.Brightness.Baseline
 	st.BrightnessManual = e.manualPrimary()
 	st.Warning = e.warning(cfg, st)
@@ -666,10 +671,18 @@ func brightnessMoved(read, last float64) bool {
 // "panel" means the panel's own full scale, so a ratio of 1.0 asks for 100% of
 // the panel and the screen can get brighter than it was at launch. "startup"
 // means the level read at launch, so 1.0 means "leave it where it was" and the
-// ratios can only dim. A display with no launch reading falls back to the panel:
-// it is the only baseline that cannot make the screen dimmer by accident.
+// ratios can only dim — but a screen left dim overnight becomes tomorrow's
+// baseline, which is how the display creeps darker day after day. "fixed" uses
+// the panel percentage the user set once, so it never drifts with the last
+// reading. A display with no usable baseline falls back to the panel: it is the
+// only baseline that cannot make the screen dimmer by accident.
 func (e *Engine) baselineOf(cfg config.Config, device string) float64 {
-	if cfg.Brightness.Baseline == config.BaselineStartup {
+	switch cfg.Brightness.Baseline {
+	case config.BaselineFixed:
+		if cfg.Brightness.BasePercent > 0 {
+			return cfg.Brightness.BasePercent / 100
+		}
+	case config.BaselineStartup:
 		if b, ok := e.baseline[device]; ok && b > 0 {
 			return b
 		}

@@ -24,7 +24,9 @@ export interface Status {
   BrightnessBase: number;
   /** Multiplier currently applied, in percent. 0 = feature off. */
   BrightnessRatio: number;
-  /** Which baseline the multiplier applies to: "panel" or "startup". */
+  /** The user-chosen fixed baseline in panel percent, or 0 if unset. */
+  BrightnessFixedBase: number;
+  /** Which baseline the multiplier applies to: "panel", "startup" or "fixed". */
   BrightnessBaseline: string;
   /** The user moved the backlight by hand; the engine stepped off this display. */
   BrightnessManual: boolean;
@@ -109,6 +111,7 @@ export const emptyStatus = (): Status => ({
   BrightnessPercent: -1,
   BrightnessBase: -1,
   BrightnessRatio: 0,
+  BrightnessFixedBase: 0,
   BrightnessBaseline: "panel",
   BrightnessManual: false,
   ThemeOn: false,

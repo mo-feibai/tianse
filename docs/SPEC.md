@@ -52,10 +52,11 @@
 
 ### 3.3 亮度
 - 公式永远是 **面板目标 = 基线 × 系数**。变的是基线从哪来，不是公式。
-- **基线二选一**（`brightness.baseline`，已拍板）：
+- **基线三选一**（`brightness.baseline`）：
   - `panel`：基线 = 面板满亮（1.0）。系数 100% 就是面板 100%，界面自解释。
   - `startup`：基线 = 启动时读到的 DDC 读数。系数是「相对你开机时屏幕有多亮」。
-  - 新装默认 `panel`；老配置升级默认 `startup`（升级瞬间屏幕不动）。
+  - `fixed`：基线 = `brightness.base_percent` 指定的固定面板百分比（用户填一次），不随每次启动读数漂移。选定时用开机读数填初值，屏幕不跳。
+  - 新装默认 `panel`；老配置升级默认 `startup`（升级瞬间屏幕不动）。 `fixed` 是为逐日变暗的正反馈加的：`startup` 每天把昨晚的暗值当新基线，夜里 ×69% 第二天开机认成 100%，一天比一天暗。
 - **安全下限：基线的 30%**（已拍板）。低于此值强制停在 30%。滑块可设 5%–100%。
 - 变化 **≥ 3%** 才写 DDC/CI（单次写入可能 50–100ms，必须放独立 goroutine，绝不阻塞 UI 线程）。
 - **手调接管**：每 30 秒空闲时读一次当前亮度，与上次写入值相差 > 5% 视为用户手动改过，**该屏本次运行不再写**（状态卡「亮度已手动接管，改设置即恢复」）。保存设置即解除接管。
@@ -167,7 +168,7 @@
 | **色温写入被拒** | `SetDeviceGammaRamp` 返回 0 且 `GetLastError` 为 0 时，报错文本写成「adapter refused the ramp without setting an error code」，不打印 errno 的假成功；同一屏连续被拒只记首条，恢复时记一行 `accepted again` | 驱动拒绝 ramp 时是哑巴，把 `ERROR_SUCCESS` 拼进错误文本会得到「The operation completed successfully.」，一次真实失败被写成成功，每秒一条塞满日志（实测 37,304 / 37,369 行是同一句） |
 | **面板幅度上限** | `Manager.Apply` 先按全强度写；被拒则从 95% 起每 5% 往下搜，记下第一个被接受的强度到 `Manager.ceiling`。已知上限只作为**搜索起点**，不作前置乘数；状态卡提示「面板上限 N%，色温已收缩」 | 驱动对 ramp 偏离线性的幅度有未公开上限（本机约 32000/65535，折合 3254 K），超出即拒。上限取决于该条 ramp 偏离多远，白天 6500 K 本来就能全强度写入——把它当乘数会让全天都变暗一档 |
 | **读数卡亮度显示** | 自动亮度开着 → 报目标值；关着但面板答 DDC/CI → 报面板回报值；面板拒绝 DDC → `不可控`；面板无可控背光 → `—` | 「功能关闭」不是「读不到」：把关闭画成破折号会让用户以为亮度不可知。只有真的没有数字时才不给数字 |
-| **亮度基线可切** | 公式永远是 `面板目标 = 基线 × 系数`，`brightness.baseline` 二选一：`panel`（基线 = 面板满亮，系数 100% 就是面板 100%）或 `startup`（基线 = 启动时的 DDC 读数）。设置页亮度卡标题行右侧一个二选一开关。切换时按 `k = 旧基线 / 新基线` 反算四个系数（`新系数 = 夹(旧系数 × k, 0.05, 1)`），屏幕不跳 | 两种语义都有人要：`panel` 自解释、跨屏一致；`startup` 保住「你调暗过屏幕，天色不该覆盖你」。二选一比二选一方案少一半改动：零迁移、不改字段名、不改滑块单位 |
+| **亮度基线可切** | 公式永远是 `面板目标 = 基线 × 系数`，`brightness.baseline` 三选一：`panel`（基线 = 面板满亮）/ `startup`（启动 DDC 读数）/ `fixed`（`base_percent` 固定面板百分比）。设置页亮度卡标题行右侧三选一，选 `fixed` 时同一行就地填百分比。切换按 `k = 旧基线 / 新基线` 反算四个系数（`新系数 = 夹(旧系数 × k, 0.05, 1)`），屏幕不跳 | `fixed` 修逐日变暗：`startup` 每次启动认昨夜暗值为新基线，夜里 23%×69%=16% 第二天被当成 100%，一天比一天暗（日志 `moved by hand 21%→9%`、`22%→13%`）；钉住一个固定百分比就断开这个正反馈 |
 | **亮度系数的说明** | 只在 `startup` 下印算式：读数卡亮度下加 `开机 23% × 100%`，设置页亮度卡标题行加 `= 面板 23%`。两个数由引擎给（`Status.BrightnessBase` / `Status.BrightnessRatio`），前端不自己算 | `panel` 下「设 100% 显示 100%」没有歧义，再印一行是噪音；`startup` 下不印算式用户会以为坏了 |
 | **手调接管** | 检测到用户手动调亮度后，**该屏本次运行停止写入**，状态卡「亮度已手动接管，改设置即恢复」；保存设置（含拖任意亮度滑块）即解除 | 旧设计是「把基线改成手动值再继续驱动」，但那样用户调暗的选择每 30 秒就被乘一次系数重新算，数字来回跳；交还手动最诚实 |
 | **一个开关管两边** | `theme.mode` 四选一同时决定 Windows 主题与天色窗口配色：`follow_sky` 两边都按色温阈值（`dark_at_k` / `light_at_k`，中间保持上一帧），`follow_system` 直接读注册表，`always_light` / `always_dark` 两边锁死。`theme.enabled = false` 时窗口跟随系统 | 旧版有两套判据：Windows 主题按色温 16:50 转暗，窗口按天光 17:41 才转暗，中间 51 分钟白窗口配黑桌面。同一个问题两个答案必然漂移 |
@@ -214,7 +215,8 @@ temp:                         # 色温
 
 brightness:
   enabled: false              # 默认关，因为 DDC/CI 有兼容性风险
-  baseline: "panel"           # panel = 面板满亮 | startup = 启动时的 DDC 读数；老配置升级为 startup
+  baseline: "panel"           # panel = 面板满亮 | startup = 启动时的 DDC 读数 | fixed = base_percent 固定值；老配置升级为 startup
+  base_percent: 0             # fixed 基线的面板百分比 0-100；0 = 未设置（normalise 回落 panel）
   day_ratio: 1.0              # 白天系数（乘在基线上）
   night_ratio: 0.45           # 夜间系数
   floor_ratio: 0.30           # 安全下限，硬编码兜底也是这个值
@@ -250,7 +252,7 @@ app:
 
 **迁移规则**：读到 `version` 小于当前版本时，按版本顺序逐级迁移；大于当前版本时，不覆盖，提示「配置来自更新版本」。
 
-已知的两步迁移：v1→v2 给缺失的 `brightness.baseline` 填 `startup`（升级瞬间屏幕不动）；v2→v3 把 `ui.theme` 折进 `theme.mode`（auto→follow_sky、light→always_light、dark→always_dark、system→follow_system）并清空旧键。迁移条件只看字段本身是否为空，不看版本号——手改过的文件可能版本号对但字段还在。
+已知的三步迁移：v1→v2 给缺失的 `brightness.baseline` 填 `startup`（升级瞬间屏幕不动）；v2→v3 把 `ui.theme` 折进 `theme.mode`（auto→follow_sky、light→always_light、dark→always_dark、system→follow_system）并清空旧键；v3→v4 新增 `brightness.base_percent`（默认 0，无需迁移数据）。迁移条件只看字段本身是否为空，不看版本号——手改过的文件可能版本号对但字段还在。
 
 ---
 

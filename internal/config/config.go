@@ -22,15 +22,23 @@ import (
 // and they disagreed by up to an hour, which is exactly the bug the user
 // reported: the desktop went dark at 16:50 and the window was still white at
 // 17:17. One switch now drives both.
-const CurrentVersion = 3
+//
+// 4 added Brightness.BasePercent for the "fixed" baseline. "startup" re-reads
+// the panel each launch, so a screen left dim overnight became tomorrow's
+// baseline and the display crept darker day after day. A fixed panel percentage
+// breaks that feedback loop.
+const CurrentVersion = 4
 
-// The two baselines Brightness.Baseline can name. They are strings in the file
+// The three baselines Brightness.Baseline can name. They are strings in the file
 // because a user reads the file, and an int would need a comment to decode.
 const (
 	// BaselinePanel multiplies against the panel's own full scale.
 	BaselinePanel = "panel"
 	// BaselineStartup multiplies against the level read at launch.
 	BaselineStartup = "startup"
+	// BaselineFixed multiplies against a panel percentage the user sets once.
+	// Unlike "startup" it does not drift with last night's dim value.
+	BaselineFixed = "fixed"
 )
 
 // Location is where the user is. Latitude and longitude are pre-filled from the
@@ -59,12 +67,18 @@ type Temp struct {
 //	            the panel and 0.45 asks for 45% of it.
 //	"startup" — the level the panel happened to be at when the app launched, so
 //	            1.0 means "leave it where it was" and the ratios can only dim.
+//	"fixed"   — BasePercent, a panel percentage the user sets once. The panel is
+//	            read at launch only to seed the UI, never to move the baseline.
 //
-// The field is a switch rather than two sets of numbers because the formula is
+// The field is a switch rather than three sets of numbers because the formula is
 // the same either way; only the value of the baseline changes.
 type Brightness struct {
-	Enabled       bool    `yaml:"enabled"`
-	Baseline      string  `yaml:"baseline"`
+	Enabled  bool   `yaml:"enabled"`
+	Baseline string `yaml:"baseline"`
+	// BasePercent is the fixed baseline in panel percent (0..100). Zero means
+	// the user has not picked a value yet; the settings page fills it from the
+	// launch reading when "fixed" is chosen.
+	BasePercent   float64 `yaml:"base_percent"`
 	DayRatio      float64 `yaml:"day_ratio"`
 	NightRatio    float64 `yaml:"night_ratio"`
 	FloorRatio    float64 `yaml:"floor_ratio"`
@@ -157,6 +171,7 @@ func Default() Config {
 		Brightness: Brightness{
 			Enabled:       false,
 			Baseline:      BaselinePanel,
+			BasePercent:   0,
 			DayRatio:      1.0,
 			NightRatio:    0.45,
 			FloorRatio:    0.30,

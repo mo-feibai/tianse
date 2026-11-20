@@ -42,6 +42,31 @@ func TestMigrateFillsAVersionTwoFileWithNoKey(t *testing.T) {
 	}
 }
 
+func TestNormaliseKeepsAFixedBaselineWithAPercent(t *testing.T) {
+	cfg := Default()
+	cfg.Brightness.Baseline = BaselineFixed
+	cfg.Brightness.BasePercent = 40
+	normalise(&cfg)
+	if cfg.Brightness.Baseline != BaselineFixed {
+		t.Errorf("Baseline = %q, want %q", cfg.Brightness.Baseline, BaselineFixed)
+	}
+	if cfg.Brightness.BasePercent != 40 {
+		t.Errorf("BasePercent = %v, want 40", cfg.Brightness.BasePercent)
+	}
+}
+
+func TestNormaliseFallsBackWhenFixedHasNoPercent(t *testing.T) {
+	// Asking for "fixed" without a value would multiply by zero; normalise has
+	// to downgrade to the panel so the screen never blacks out.
+	cfg := Default()
+	cfg.Brightness.Baseline = BaselineFixed
+	cfg.Brightness.BasePercent = 0
+	normalise(&cfg)
+	if cfg.Brightness.Baseline != BaselinePanel {
+		t.Errorf("Baseline = %q, want %q without a fixed percent", cfg.Brightness.Baseline, BaselinePanel)
+	}
+}
+
 func TestNormaliseRejectsAnUnknownBaseline(t *testing.T) {
 	cfg := Default()
 	cfg.Brightness.Baseline = "whatever"

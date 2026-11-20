@@ -10,7 +10,9 @@ const props = defineProps<{
   brightnessBase: number;
   /** Multiplier currently applied, in percent. 0 = the feature is off. */
   brightnessRatio: number;
-  /** Which baseline the multiplier applies to: "panel" or "startup". */
+  /** The fixed baseline in panel percent, or 0 if unset. */
+  brightnessFixedBase: number;
+  /** Which baseline the multiplier applies to: "panel", "startup" or "fixed". */
   brightnessBaseline: string;
   /** The user moved the backlight by hand and the engine stepped off it. */
   brightnessManual: boolean;
@@ -66,6 +68,10 @@ const brightnessText = computed(() => {
 const brightnessNote = computed(() => {
   if (props.brightnessManual) return "手动";
   if (!props.brightnessOk || props.brightnessBase < 0) return "";
+  if (props.brightnessBaseline === "fixed" && props.brightnessFixedBase > 0) {
+    if (props.brightnessRatio <= 0) return `固定 ${props.brightnessFixedBase}%`;
+    return `固定 ${props.brightnessFixedBase}% × ${props.brightnessRatio}%`;
+  }
   if (props.brightnessBaseline !== "startup") return "";
   if (props.brightnessRatio <= 0) return `开机 ${props.brightnessBase}%`;
   return `开机 ${props.brightnessBase}% × ${props.brightnessRatio}%`;

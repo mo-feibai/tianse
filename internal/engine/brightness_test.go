@@ -45,6 +45,31 @@ func TestBaselineOfUsesTheLaunchReadingUnderTheStartupSetting(t *testing.T) {
 	}
 }
 
+func TestBaselineOfUsesTheFixedPercent(t *testing.T) {
+	// "fixed" uses a panel percentage the user set once, independent of whatever
+	// the panel happened to be at launch — that is what breaks the day-after-day
+	// creep. 40% of the panel is 0.4 as a multiplier.
+	e := &Engine{baseline: map[string]float64{"d1": 0.23}}
+	cfg := config.Default()
+	cfg.Brightness.Baseline = config.BaselineFixed
+	cfg.Brightness.BasePercent = 40
+	if got := e.baselineOf(cfg, "d1"); math.Abs(got-0.4) > 1e-9 {
+		t.Errorf("baselineOf = %v, want 0.4 from the fixed 40%%", got)
+	}
+}
+
+func TestBaselineOfFallsBackToThePanelWithoutAFixedPercent(t *testing.T) {
+	// A fixed baseline with no value falls back to the panel, never to zero —
+	// multiplying by zero would black the screen out.
+	e := &Engine{baseline: map[string]float64{"d1": 0.23}}
+	cfg := config.Default()
+	cfg.Brightness.Baseline = config.BaselineFixed
+	cfg.Brightness.BasePercent = 0
+	if got := e.baselineOf(cfg, "d1"); got != 1 {
+		t.Errorf("baselineOf = %v, want 1 when no fixed percent is set", got)
+	}
+}
+
 func TestBaselineOfFallsBackToThePanelWithNoReading(t *testing.T) {
 	// A display that never answered DDC has no launch reading. Falling back to
 	// the panel keeps the multiplier meaningful instead of zeroing the screen.
