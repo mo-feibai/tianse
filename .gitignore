@@ -16,3 +16,6 @@ assets/fonts/src/
 .tmp
 *.exe
 *.log
+
+# meow-memory plugin data
+.dsh-meow/
