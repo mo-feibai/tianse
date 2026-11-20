@@ -98,16 +98,13 @@ function setBaseline(next: string) {
   emit("commit");
 }
 
-function setFixedBase(e: Event) {
-  const raw = Number((e.target as HTMLInputElement).value);
-  const pct = Math.min(100, Math.max(5, Math.round(raw)));
-  (e.target as HTMLInputElement).value = String(pct);
+function setFixedBase(v: number) {
+  const pct = Math.min(100, Math.max(5, Math.round(v)));
   const k = baselineFactor("fixed") / (pct / 100);
   emit("input", "Brightness.BasePercent", pct);
   emit("input", "Brightness.DayRatio", clampRatio(dayRatio.value * k));
   emit("input", "Brightness.NightRatio", clampRatio(nightRatio.value * k));
   emit("input", "Brightness.FloorRatio", clampRatio(floor.value * k));
-  emit("commit");
 }
 
 const mode = computed(() => String(theme.value.Mode ?? "follow_sky"));
@@ -149,10 +146,13 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
 const brightnessNote = computed(() => {
   if (props.brightnessBase < 0) return "此屏不接受亮度控制";
   if (props.brightnessManual) return "已手动接管，改设置即恢复";
+  if (baseline.value === "fixed") return "";
   if (baseline.value !== "startup") return "";
   const base = props.brightnessBase;
-  if (props.brightnessRatio <= 0) return `开机 ${base}%`;
-  return `开机 ${base}% × ${props.brightnessRatio}% = 面板 ${Math.round((base * props.brightnessRatio) / 100)}%`;
+  if (props.brightnessRatio <= 0) return `开机${base}%`;
+  // Kept short on purpose: the full derivation lives on the reading card, and
+  // a long formula here pushes the baseline switch onto a second line.
+  return `开机${base}%×${props.brightnessRatio}%=面板${Math.round((base * props.brightnessRatio) / 100)}%`;
 });
 </script>
 
@@ -209,12 +209,20 @@ const brightnessNote = computed(() => {
         <div class="headrow">
           <h2 class="head">亮度</h2>
           <span v-if="brightnessNote" class="basis">{{ brightnessNote }}</span>
-          <label v-if="baseline === 'fixed'" class="fixedbase">
-            基准<input class="fixednum" type="number" min="5" max="100" step="1" :value="fixedPct || props.brightnessBase" @change="setFixedBase" />%
-          </label>
-          <Segmented :options="BASELINES" :model-value="baseline" @update:model-value="setBaseline" />
+          <Segmented class="seg" :options="BASELINES" :model-value="baseline" @update:model-value="setBaseline" />
         </div>
         <div class="grid">
+          <Slider
+            v-if="baseline === 'fixed'"
+            label="固定基准"
+            :model-value="fixedPct > 0 ? fixedPct / 100 : (props.brightnessBase > 0 ? props.brightnessBase / 100 : 1)"
+            :min="0.05"
+            :max="1"
+            :step="0.01"
+            :display="pct(fixedPct > 0 ? fixedPct / 100 : (props.brightnessBase > 0 ? props.brightnessBase / 100 : 1))"
+            @update:model-value="setFixedBase($event * 100)"
+            @commit="emit('commit')"
+          />
           <Slider
             label="白天亮度"
             :model-value="dayRatio"
@@ -246,6 +254,7 @@ const brightnessNote = computed(() => {
             @commit="emit('commit')"
           />
           <Slider
+            v-if="baseline !== 'fixed'"
             label="写入阈值"
             :model-value="step"
             :min="0.01"
